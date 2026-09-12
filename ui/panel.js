@@ -16,13 +16,16 @@ let dragOffsetY = 0;
  * Ensure Google Font is loaded for high-end typography
  */
 function ensureFonts() {
-  if (!document.getElementById('cpt-font-plus-jakarta')) {
-    const link = document.createElement('link');
-    link.id = 'cpt-font-plus-jakarta';
-    link.rel = 'stylesheet';
-    link.href = 'https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap';
-    document.head.appendChild(link);
-  }
+  try {
+    if (!document.getElementById('cpt-font-plus-jakarta')) {
+      const link = document.createElement('link');
+      link.id = 'cpt-font-plus-jakarta';
+      link.rel = 'stylesheet';
+      link.href = 'https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap';
+      const container = document.head || document.documentElement || document.body;
+      if (container) container.appendChild(link);
+    }
+  } catch (_e) {}
 }
 
 /**
@@ -278,13 +281,19 @@ export function createPanel(handlers) {
   // Initialize Mini Dock widget (Orb)
   createMiniDock();
 
-  // Set up event listeners
-  setupTabs();
-  setupDragging();
-  setupToggle();
-  setupHotkeys(handlers);
+  // Set up event listeners safely
+  try { setupTabs(); } catch (e) { console.warn('[CourseraPro] setupTabs error:', e); }
+  try { setupDragging(); } catch (e) { console.warn('[CourseraPro] setupDragging error:', e); }
+  try { setupToggle(); } catch (e) { console.warn('[CourseraPro] setupToggle error:', e); }
+  try { setupHotkeys(handlers); } catch (e) { console.warn('[CourseraPro] setupHotkeys error:', e); }
 
-  // Bind action handlers
+  // Ensure panel is visible and expanded by default
+  panelEl.classList.remove('cpt-hidden');
+  panelEl.style.setProperty('display', 'block', 'important');
+  panelEl.style.setProperty('visibility', 'visible', 'important');
+  panelEl.style.setProperty('opacity', '1', 'important');
+
+  // Bind action handlers safely
   document.getElementById('cpt-autopilot')?.addEventListener('click', () => handlers.onAutopilot?.());
   document.getElementById('cpt-bypass')?.addEventListener('click', () => handlers.onBypass?.());
   document.getElementById('cpt-quiz')?.addEventListener('click', () => handlers.onQuiz?.());
@@ -304,11 +313,6 @@ export function createPanel(handlers) {
   const savedRate = localStorage.getItem('cpt_playback_rate') || '1';
   const speedTag = document.getElementById('cpt-speed-tag');
   if (speedTag) speedTag.textContent = `${savedRate}x`;
-
-  // Restore minimized state if previously minimized
-  if (localStorage.getItem('cpt_panel_minimized') === 'true') {
-    togglePanelMinimize(true);
-  }
 
   // Update active engine badge dynamically
   try {
@@ -535,6 +539,7 @@ function setupMiniDockDragging() {
  */
 function setupDragging() {
   const handle = document.getElementById('cpt-drag-handle');
+  if (!handle || !panelEl) return;
 
   handle.addEventListener('mousedown', (e) => {
     if (e.target.tagName === 'BUTTON' || e.target.closest('button')) return;

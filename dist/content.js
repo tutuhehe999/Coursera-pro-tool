@@ -1105,7 +1105,6 @@ async function getAvailableModels(provider = 'gemini') {
  * Supports direct bypass for videos, readings, widgets, and coaches.
  */
 
-
 /**
  * Extract CSRF token from document.cookie
  * @returns {string}
@@ -1604,13 +1603,16 @@ let dragOffsetY = 0;
  * Ensure Google Font is loaded for high-end typography
  */
 function ensureFonts() {
-  if (!document.getElementById('cpt-font-plus-jakarta')) {
-    const link = document.createElement('link');
-    link.id = 'cpt-font-plus-jakarta';
-    link.rel = 'stylesheet';
-    link.href = 'https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap';
-    document.head.appendChild(link);
-  }
+  try {
+    if (!document.getElementById('cpt-font-plus-jakarta')) {
+      const link = document.createElement('link');
+      link.id = 'cpt-font-plus-jakarta';
+      link.rel = 'stylesheet';
+      link.href = 'https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap';
+      const container = document.head || document.documentElement || document.body;
+      if (container) container.appendChild(link);
+    }
+  } catch (_e) {}
 }
 
 /**
@@ -1866,13 +1868,19 @@ function createPanel(handlers) {
   // Initialize Mini Dock widget (Orb)
   createMiniDock();
 
-  // Set up event listeners
-  setupTabs();
-  setupDragging();
-  setupToggle();
-  setupHotkeys(handlers);
+  // Set up event listeners safely
+  try { setupTabs(); } catch (e) { console.warn('[CourseraPro] setupTabs error:', e); }
+  try { setupDragging(); } catch (e) { console.warn('[CourseraPro] setupDragging error:', e); }
+  try { setupToggle(); } catch (e) { console.warn('[CourseraPro] setupToggle error:', e); }
+  try { setupHotkeys(handlers); } catch (e) { console.warn('[CourseraPro] setupHotkeys error:', e); }
 
-  // Bind action handlers
+  // Ensure panel is visible and expanded by default
+  panelEl.classList.remove('cpt-hidden');
+  panelEl.style.setProperty('display', 'block', 'important');
+  panelEl.style.setProperty('visibility', 'visible', 'important');
+  panelEl.style.setProperty('opacity', '1', 'important');
+
+  // Bind action handlers safely
   document.getElementById('cpt-autopilot')?.addEventListener('click', () => handlers.onAutopilot?.());
   document.getElementById('cpt-bypass')?.addEventListener('click', () => handlers.onBypass?.());
   document.getElementById('cpt-quiz')?.addEventListener('click', () => handlers.onQuiz?.());
@@ -1892,11 +1900,6 @@ function createPanel(handlers) {
   const savedRate = localStorage.getItem('cpt_playback_rate') || '1';
   const speedTag = document.getElementById('cpt-speed-tag');
   if (speedTag) speedTag.textContent = `${savedRate}x`;
-
-  // Restore minimized state if previously minimized
-  if (localStorage.getItem('cpt_panel_minimized') === 'true') {
-    togglePanelMinimize(true);
-  }
 
   // Update active engine badge dynamically
   try {
@@ -2123,6 +2126,7 @@ function setupMiniDockDragging() {
  */
 function setupDragging() {
   const handle = document.getElementById('cpt-drag-handle');
+  if (!handle || !panelEl) return;
 
   handle.addEventListener('mousedown', (e) => {
     if (e.target.tagName === 'BUTTON' || e.target.closest('button')) return;
@@ -2334,18 +2338,6 @@ function removePanel() {
  * Automatically marks videos and readings as completed using Native REST API
  * with graceful fallback to background worker tab.
  */
-
-
-
-
-import {
-  getCurrentUserId,
-  apiCompleteSupplement,
-  apiCompleteVideo,
-  apiCompleteWidget,
-  apiCompleteCoach,
-  apiCompleteLti,
-} from '../utils/coursera-api.js';
 
 let isBypassRunning = false;
 
@@ -2661,9 +2653,6 @@ function cycleVideoSpeed() {
  * 3. Auto-submit the quiz attempt
  * 4. Automatically exit back to the overview page!
  */
-
-
-
 
 const STORAGE_KEY_QUIZ = 'cpt_auto_quiz';
 
@@ -4061,11 +4050,6 @@ async function checkAndResumeAutoQuiz() {
  * - Resume across page navigations via chrome.storage.local
  */
 
-
-
-
-
-
 const STORAGE_KEY = 'cpt_auto_discussion';
 const DISCUSSION_DELAY_SECONDS = 30;
 
@@ -4660,8 +4644,6 @@ async function checkAndResumeDiscussionAutomation() {
  * Automates peer review submission, grading, and multi-review loop until requirement is met
  */
 
-
-
 const SAMPLE_REVIEWS = [
   'Excellent work on this research assignment. The primary research question is well-defined, focused, and directly addresses a meaningful gap in the literature. The proposed methodology is practical, logically structured, and demonstrates a thorough understanding of the relevant academic frameworks.',
   'This is a comprehensive and well-articulated submission. The author provides clear background rationale, supports key claims with relevant context, and outlines a sound research approach. The ethical considerations are thoughtfully addressed, ensuring strong academic rigor throughout.',
@@ -5119,10 +5101,6 @@ async function handlePeerGradedAssignment() {
  * 2. Hỗ trợ lấy link chấm chéo (Get Shareable Peer Review Link)
  */
 
-
-
-
-
 /**
  * Extract course ID from DOM state, metadata, scripts, or Coursera API
  * @param {string} courseSlug
@@ -5437,10 +5415,6 @@ async function handleRequestGrading() {
  * 2. Uses AI (Gemini / DeepSeek / Groq) to generate a top-grade academic submission
  * 3. Automatically fills title, essay bodies, URLs, and honor code checkboxes
  */
-
-
-
-
 
 /**
  * Safely fill an input, textarea, or contenteditable element in React
@@ -5882,20 +5856,6 @@ async function handleAutoAssignment() {
  * 4. Verifies 100% completion with Fail-Safe Auditor
  */
 
-
-
-
-import {
-  getCurrentUserId,
-  fetchCourseStructure,
-  fetchCourseCompletedItems,
-  apiCompleteSupplement,
-  apiCompleteVideo,
-  apiCompleteWidget,
-  apiCompleteCoach,
-  apiCompleteLti,
-} from '../utils/coursera-api.js';
-
 let isAutopilotRunning = false;
 let isAutopilotPaused = false;
 
@@ -6116,15 +6076,6 @@ async function startCourseAutopilot() {
  * Injects the floating panel and sets up all module handlers
  */
 
-
-
-
-
-
-
-
-
-
 /**
  * Inject the page-context script for lockdown browser bypass
  */
@@ -6282,14 +6233,14 @@ function init() {
   if (!location.href.includes('coursera.org')) return;
 
   // If this tab was opened as a background discussion worker, run worker mode silently and exit
-  if (location.hash.includes('cpt_worker=1')) {
+  if ((location.hash || '').includes('cpt_worker=1')) {
     console.log('[CourseraPro] Background discussion worker active on:', location.href);
     runDiscussionWorker();
     return;
   }
 
   // If this tab was opened as a background bypass worker, run video/reading auto-completion and exit
-  if (location.hash.includes('cpt_bypass=1')) {
+  if ((location.hash || '').includes('cpt_bypass=1')) {
     console.log('[CourseraPro] Background bypass worker active on:', location.href);
     runBypassWorker();
     return;

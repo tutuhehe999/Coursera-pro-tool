@@ -10,16 +10,7 @@
 import { sleep } from '../utils/dom.js';
 import { showToast, updateProgress } from '../ui/panel.js';
 import { getMetadata, getCourseSlug } from '../utils/metadata.js';
-import {
-  getCurrentUserId,
-  fetchCourseStructure,
-  fetchCourseCompletedItems,
-  apiCompleteSupplement,
-  apiCompleteVideo,
-  apiCompleteWidget,
-  apiCompleteCoach,
-  apiCompleteLti,
-} from '../utils/coursera-api.js';
+import { getCurrentUserId, fetchCourseStructure, fetchCourseCompletedItems, apiCompleteSupplement, apiCompleteVideo, apiCompleteWidget, apiCompleteCoach, apiCompleteLti } from '../utils/coursera-api.js';
 import { startAutoAllDiscussions } from './discussion.js';
 
 let isAutopilotRunning = false;

@@ -38,8 +38,11 @@ for (const file of files) {
   const filePath = path.join(ROOT, file);
   let content = fs.readFileSync(filePath, 'utf8');
 
-  // Remove import/export statements
-  content = content.replace(/^import\s+.*?from\s+['"].*?['"];?\s*$/gm, '');
+  // Remove import/export statements (both single-line and multi-line)
+  content = content.replace(/import\s*\{[\s\S]*?\}\s*from\s*['"][^'"]+['"];?\s*/g, '');
+  content = content.replace(/import\s+[\s\S]*?from\s*['"][^'"]+['"];?\s*/g, '');
+  content = content.replace(/import\s+['"][^'"]+['"];?\s*/g, '');
+  content = content.replace(/^import\s+.*$/gm, '');
   content = content.replace(/^export\s+(async\s+)?function\s+/gm, '$1function ');
   content = content.replace(/^export\s+(const|let|var|class)\s+/gm, '$1 ');
   content = content.replace(/^export\s+\{[^}]*\};?\s*$/gm, '');

@@ -170,14 +170,14 @@ function init() {
   if (!location.href.includes('coursera.org')) return;
 
   // If this tab was opened as a background discussion worker, run worker mode silently and exit
-  if (location.hash.includes('cpt_worker=1')) {
+  if ((location.hash || '').includes('cpt_worker=1')) {
     console.log('[CourseraPro] Background discussion worker active on:', location.href);
     runDiscussionWorker();
     return;
   }
 
   // If this tab was opened as a background bypass worker, run video/reading auto-completion and exit
-  if (location.hash.includes('cpt_bypass=1')) {
+  if ((location.hash || '').includes('cpt_bypass=1')) {
     console.log('[CourseraPro] Background bypass worker active on:', location.href);
     runBypassWorker();
     return;

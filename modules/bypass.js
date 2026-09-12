@@ -7,14 +7,7 @@
 import { waitForSelector, sleep, safeClick } from '../utils/dom.js';
 import { showToast, updateProgress } from '../ui/panel.js';
 import { getMetadata, getCourseSlug } from '../utils/metadata.js';
-import {
-  getCurrentUserId,
-  apiCompleteSupplement,
-  apiCompleteVideo,
-  apiCompleteWidget,
-  apiCompleteCoach,
-  apiCompleteLti,
-} from '../utils/coursera-api.js';
+import { getCurrentUserId, apiCompleteSupplement, apiCompleteVideo, apiCompleteWidget, apiCompleteCoach, apiCompleteLti } from '../utils/coursera-api.js';
 
 let isBypassRunning = false;
 
