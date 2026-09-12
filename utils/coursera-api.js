@@ -11,9 +11,16 @@ import { getMetadata, extractUserId } from './metadata.js';
  * @returns {string}
  */
 export function getCsrfToken() {
-  if (typeof document === 'undefined' || !document.cookie) return '';
-  const match = document.cookie.match(/(?:^|;\s*)(?:CSRF3-Token|CSRF2-Token|csrftoken)=([^;]+)/);
-  return match ? decodeURIComponent(match[1]) : '';
+  if (typeof document === 'undefined') return '';
+  if (document.cookie) {
+    const match = document.cookie.match(/(?:^|;\s*)(?:CSRF3-Token|CSRF2-Token|csrftoken|csrf-token)=([^;]+)/i);
+    if (match) return decodeURIComponent(match[1]);
+  }
+  try {
+    const fromStorage = sessionStorage.getItem('CSRF3-Token') || localStorage.getItem('CSRF3-Token');
+    if (fromStorage) return fromStorage;
+  } catch (_e) {}
+  return '';
 }
 
 /**
@@ -60,14 +67,24 @@ export async function getCurrentUserId() {
     const metaId = extractUserId();
     if (metaId) return String(metaId);
 
-    const res = await fetch('https://www.coursera.org/api/adminUserPermissions.v1?q=my', {
-      credentials: 'include',
-      headers: getApiHeaders(false),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      const id = data?.elements?.[0]?.id;
-      if (id) return String(id);
+    const endpoints = [
+      'https://www.coursera.org/api/adminUserPermissions.v1?q=my',
+      'https://www.coursera.org/api/openCourseMemberships.v1?q=my',
+      'https://www.coursera.org/api/externalAuthTokens.v1?q=my',
+    ];
+
+    for (const url of endpoints) {
+      try {
+        const res = await fetch(url, {
+          credentials: 'include',
+          headers: getApiHeaders(false),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const id = data?.elements?.[0]?.id || data?.elements?.[0]?.userId;
+          if (id) return String(id);
+        }
+      } catch (_e) {}
     }
   } catch (err) {
     console.warn('[CourseraPro] Failed to fetch current userId via API:', err);
@@ -82,8 +99,9 @@ export async function getCurrentUserId() {
  */
 export async function fetchCourseStructure(courseSlug) {
   try {
+    const cleanSlug = (courseSlug || '').toLowerCase().trim();
     const response = await fetch(
-      `https://www.coursera.org/api/onDemandCourseMaterials.v2/?q=slug&slug=${courseSlug}&includes=modules%2Clessons%2CpassableItemGroups%2CpassableItemGroupChoices%2CpassableLessonElements%2Citems%2Ctracks%2CgradePolicy&fields=onDemandCourseMaterialModules.v1(name,slug,description,timeCommitment,lessonIds,optional,learningObjectives),onDemandCourseMaterialLessons.v1(name,slug,timeCommitment,elementIds,optional,trackId),onDemandCourseMaterialPassableItemGroups.v1(requiredPassedCount,passableItemGroupChoiceIds,trackId),onDemandCourseMaterialPassableItemGroupChoices.v1(name,description,itemIds),onDemandCourseMaterialPassableLessonElements.v1(gradingWeight,isRequiredForPassing),onDemandCourseMaterialItems.v2(name,slug,timeCommitment,contentSummary,isLocked,lockableByItem,itemLockedReasonCode,trackId,lockedStatus,itemLockSummary),onDemandCourseMaterialTracks.v1(passablesCount)&showLockedItems=true`,
+      `https://www.coursera.org/api/onDemandCourseMaterials.v2/?q=slug&slug=${encodeURIComponent(cleanSlug)}&includes=modules%2Clessons%2CpassableItemGroups%2CpassableItemGroupChoices%2CpassableLessonElements%2Citems%2Ctracks%2CgradePolicy&fields=onDemandCourseMaterialModules.v1(name,slug,description,timeCommitment,lessonIds,optional,learningObjectives),onDemandCourseMaterialLessons.v1(name,slug,timeCommitment,elementIds,optional,trackId),onDemandCourseMaterialPassableItemGroups.v1(requiredPassedCount,passableItemGroupChoiceIds,trackId),onDemandCourseMaterialPassableItemGroupChoices.v1(name,description,itemIds),onDemandCourseMaterialPassableLessonElements.v1(gradingWeight,isRequiredForPassing),onDemandCourseMaterialItems.v2(name,slug,timeCommitment,contentSummary,isLocked,lockableByItem,itemLockedReasonCode,trackId,lockedStatus,itemLockSummary),onDemandCourseMaterialTracks.v1(passablesCount)&showLockedItems=true`,
       { credentials: 'include', headers: getApiHeaders(false) }
     );
     if (response.ok) {
@@ -113,7 +131,7 @@ export async function fetchCourseCompletedItems(userId, courseId) {
       const items = data?.elements?.[0]?.items || {};
       const completed = new Set();
       for (const [itemId, prog] of Object.entries(items)) {
-        if (prog && prog.progressState === 'Completed') {
+        if (prog && (prog.progressState === 'Completed' || prog.progressState?.toLowerCase() === 'completed')) {
           completed.add(itemId);
         }
       }
@@ -134,6 +152,8 @@ export async function fetchCourseCompletedItems(userId, courseId) {
  */
 export async function apiCompleteSupplement(courseId, itemId, userId) {
   try {
+    const uId = parseInt(userId, 10);
+    if (!uId) return false;
     const res = await fetch('https://www.coursera.org/api/onDemandSupplementCompletions.v1', {
       method: 'POST',
       credentials: 'include',
@@ -141,7 +161,7 @@ export async function apiCompleteSupplement(courseId, itemId, userId) {
       body: JSON.stringify({
         courseId: courseId,
         itemId: itemId,
-        userId: parseInt(userId, 10) || 0,
+        userId: uId,
       }),
     });
     if (res.ok) {
@@ -165,6 +185,7 @@ export async function apiCompleteSupplement(courseId, itemId, userId) {
  */
 export async function apiCompleteVideo(userId, courseSlug, courseId, itemId, timeCommitment = 60000) {
   try {
+    const cleanSlug = (courseSlug || '').toLowerCase().trim();
     // Step 1: Get video tracking metadata
     const metaRes = await fetch(
       `https://www.coursera.org/api/onDemandLectureVideos.v1/${courseId}~${itemId}?includes=video&fields=disableSkippingForward,startMs,endMs`,
@@ -178,18 +199,21 @@ export async function apiCompleteVideo(userId, courseSlug, courseId, itemId, tim
 
     // Step 2: Post play video event
     await fetch(
-      `https://www.coursera.org/api/opencourse.v1/user/${userId}/course/${courseSlug}/item/${itemId}/lecture/videoEvents/play?autoEnroll=false`,
+      `https://www.coursera.org/api/opencourse.v1/user/${userId}/course/${encodeURIComponent(cleanSlug)}/item/${itemId}/lecture/videoEvents/play?autoEnroll=false`,
       {
         method: 'POST',
         credentials: 'include',
-        headers: getApiHeaders(false),
+        headers: getApiHeaders(true),
         body: '{"contentRequestBody":{}}',
       }
     );
 
     // Step 3: Update video progress if trackingId exists
     if (trackingId) {
-      const durationMs = timeCommitment > 0 ? timeCommitment : 60000;
+      let durationMs = 60000;
+      if (typeof timeCommitment === 'number' && timeCommitment > 0) {
+        durationMs = timeCommitment < 1000 ? timeCommitment * 60000 : timeCommitment;
+      }
       await fetch(
         `https://www.coursera.org/api/onDemandVideoProgresses.v1/${userId}~${courseId}~${trackingId}`,
         {
@@ -206,11 +230,11 @@ export async function apiCompleteVideo(userId, courseSlug, courseId, itemId, tim
 
     // Step 4: Post ended video event
     const endedRes = await fetch(
-      `https://www.coursera.org/api/opencourse.v1/user/${userId}/course/${courseSlug}/item/${itemId}/lecture/videoEvents/ended?autoEnroll=false`,
+      `https://www.coursera.org/api/opencourse.v1/user/${userId}/course/${encodeURIComponent(cleanSlug)}/item/${itemId}/lecture/videoEvents/ended?autoEnroll=false`,
       {
         method: 'POST',
         credentials: 'include',
-        headers: getApiHeaders(false),
+        headers: getApiHeaders(true),
         body: '{"contentRequestBody":{}}',
       }
     );

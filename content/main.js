@@ -10,7 +10,7 @@ import { handleDiscussionPrompt, toggleAutoDiscussions, checkAndResumeDiscussion
 import { handleReview, handlePeerGradedAssignment, checkAndResumeAutoReview } from '../modules/review.js';
 import { handleDisableAiGrading, handleGetShareableLink, handleRequestGrading } from '../modules/grading.js';
 import { handleAutoAssignment } from '../modules/assignment.js';
-import { startCourseAutopilot } from '../modules/autopilot.js';
+import { startCourseAutopilot, checkAndResumeCourseAutopilot } from '../modules/autopilot.js';
 import { waitForSelector } from '../utils/dom.js';
 
 /**
@@ -194,9 +194,10 @@ function init() {
   // Inject panel immediately
   ensurePanel();
 
-  // Check if there is an active auto-discussion, auto-quiz, or auto-review process to resume
+  // Check if there is an active auto-discussion, auto-quiz, auto-autopilot, or auto-review process to resume
   checkAndResumeDiscussionAutomation();
   checkAndResumeAutoQuiz();
+  checkAndResumeCourseAutopilot();
   checkAndResumeAutoReview();
   checkAndRecordReviewFeedback();
 
@@ -205,6 +206,7 @@ function init() {
     setTimeout(() => {
       checkAndResumeDiscussionAutomation();
       checkAndResumeAutoQuiz();
+      checkAndResumeCourseAutopilot();
       checkAndResumeAutoReview();
       checkAndRecordReviewFeedback();
     }, 1200);
@@ -219,6 +221,7 @@ function init() {
       console.log('[CourseraPro] SPA route change detected:', lastMonitoredUrl);
       checkAndResumeDiscussionAutomation();
       checkAndResumeAutoQuiz();
+      checkAndResumeCourseAutopilot();
       checkAndResumeAutoReview();
     }
     

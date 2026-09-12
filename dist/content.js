@@ -269,13 +269,12 @@ function getMetadata() {
     }
   } catch (_e) {}
 
-  // 3. URL-based parsing fallback
-  const url = location.href;
+  const url = typeof location !== 'undefined' ? location.href : '';
   const match = url.match(
-    /coursera\.org\/learn\/([^/]+)(?:\/([^/]+))?(?:\/([^/]+))?(?:\/([^/]+))?/
+    /(?:coursera\.org)?(?:\/programs\/[^/?#]+\/|\/browse\/[^/?#]+\/)?(?:learn|course)\/([^/?#]+)(?:\/([^/?#]+))?(?:\/([^/?#]+))?(?:\/([^/?#]+))?/i
   );
 
-  const slug = match ? match[1] || '' : '';
+  const slug = match ? match[1].toLowerCase() : getCourseSlug();
   const section = match ? match[2] || '' : '';
   const week = match ? match[3] || '' : '';
   const extractedId = extractItemId() || (match ? match[4] || '' : '');
@@ -352,9 +351,11 @@ function extractUserId() {
  * Extract course slug from URL
  * @returns {string}
  */
-function getCourseSlug() {
-  const match = location.href.match(/\/learn\/([^/]+)/);
-  return match ? match[1] : '';
+function getCourseSlug(url = '') {
+  const targetUrl = url || (typeof location !== 'undefined' ? location.href : '');
+  if (!targetUrl) return '';
+  const match = targetUrl.match(/(?:\/learn\/|\/course\/)([^/?#]+)/i);
+  return match ? match[1].toLowerCase() : '';
 }
 
 /**
@@ -1110,9 +1111,16 @@ async function getAvailableModels(provider = 'gemini') {
  * @returns {string}
  */
 function getCsrfToken() {
-  if (typeof document === 'undefined' || !document.cookie) return '';
-  const match = document.cookie.match(/(?:^|;\s*)(?:CSRF3-Token|CSRF2-Token|csrftoken)=([^;]+)/);
-  return match ? decodeURIComponent(match[1]) : '';
+  if (typeof document === 'undefined') return '';
+  if (document.cookie) {
+    const match = document.cookie.match(/(?:^|;\s*)(?:CSRF3-Token|CSRF2-Token|csrftoken|csrf-token)=([^;]+)/i);
+    if (match) return decodeURIComponent(match[1]);
+  }
+  try {
+    const fromStorage = sessionStorage.getItem('CSRF3-Token') || localStorage.getItem('CSRF3-Token');
+    if (fromStorage) return fromStorage;
+  } catch (_e) {}
+  return '';
 }
 
 /**
@@ -1159,14 +1167,24 @@ async function getCurrentUserId() {
     const metaId = extractUserId();
     if (metaId) return String(metaId);
 
-    const res = await fetch('https://www.coursera.org/api/adminUserPermissions.v1?q=my', {
-      credentials: 'include',
-      headers: getApiHeaders(false),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      const id = data?.elements?.[0]?.id;
-      if (id) return String(id);
+    const endpoints = [
+      'https://www.coursera.org/api/adminUserPermissions.v1?q=my',
+      'https://www.coursera.org/api/openCourseMemberships.v1?q=my',
+      'https://www.coursera.org/api/externalAuthTokens.v1?q=my',
+    ];
+
+    for (const url of endpoints) {
+      try {
+        const res = await fetch(url, {
+          credentials: 'include',
+          headers: getApiHeaders(false),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const id = data?.elements?.[0]?.id || data?.elements?.[0]?.userId;
+          if (id) return String(id);
+        }
+      } catch (_e) {}
     }
   } catch (err) {
     console.warn('[CourseraPro] Failed to fetch current userId via API:', err);
@@ -1181,8 +1199,9 @@ async function getCurrentUserId() {
  */
 async function fetchCourseStructure(courseSlug) {
   try {
+    const cleanSlug = (courseSlug || '').toLowerCase().trim();
     const response = await fetch(
-      `https://www.coursera.org/api/onDemandCourseMaterials.v2/?q=slug&slug=${courseSlug}&includes=modules%2Clessons%2CpassableItemGroups%2CpassableItemGroupChoices%2CpassableLessonElements%2Citems%2Ctracks%2CgradePolicy&fields=onDemandCourseMaterialModules.v1(name,slug,description,timeCommitment,lessonIds,optional,learningObjectives),onDemandCourseMaterialLessons.v1(name,slug,timeCommitment,elementIds,optional,trackId),onDemandCourseMaterialPassableItemGroups.v1(requiredPassedCount,passableItemGroupChoiceIds,trackId),onDemandCourseMaterialPassableItemGroupChoices.v1(name,description,itemIds),onDemandCourseMaterialPassableLessonElements.v1(gradingWeight,isRequiredForPassing),onDemandCourseMaterialItems.v2(name,slug,timeCommitment,contentSummary,isLocked,lockableByItem,itemLockedReasonCode,trackId,lockedStatus,itemLockSummary),onDemandCourseMaterialTracks.v1(passablesCount)&showLockedItems=true`,
+      `https://www.coursera.org/api/onDemandCourseMaterials.v2/?q=slug&slug=${encodeURIComponent(cleanSlug)}&includes=modules%2Clessons%2CpassableItemGroups%2CpassableItemGroupChoices%2CpassableLessonElements%2Citems%2Ctracks%2CgradePolicy&fields=onDemandCourseMaterialModules.v1(name,slug,description,timeCommitment,lessonIds,optional,learningObjectives),onDemandCourseMaterialLessons.v1(name,slug,timeCommitment,elementIds,optional,trackId),onDemandCourseMaterialPassableItemGroups.v1(requiredPassedCount,passableItemGroupChoiceIds,trackId),onDemandCourseMaterialPassableItemGroupChoices.v1(name,description,itemIds),onDemandCourseMaterialPassableLessonElements.v1(gradingWeight,isRequiredForPassing),onDemandCourseMaterialItems.v2(name,slug,timeCommitment,contentSummary,isLocked,lockableByItem,itemLockedReasonCode,trackId,lockedStatus,itemLockSummary),onDemandCourseMaterialTracks.v1(passablesCount)&showLockedItems=true`,
       { credentials: 'include', headers: getApiHeaders(false) }
     );
     if (response.ok) {
@@ -1212,7 +1231,7 @@ async function fetchCourseCompletedItems(userId, courseId) {
       const items = data?.elements?.[0]?.items || {};
       const completed = new Set();
       for (const [itemId, prog] of Object.entries(items)) {
-        if (prog && prog.progressState === 'Completed') {
+        if (prog && (prog.progressState === 'Completed' || prog.progressState?.toLowerCase() === 'completed')) {
           completed.add(itemId);
         }
       }
@@ -1233,6 +1252,8 @@ async function fetchCourseCompletedItems(userId, courseId) {
  */
 async function apiCompleteSupplement(courseId, itemId, userId) {
   try {
+    const uId = parseInt(userId, 10);
+    if (!uId) return false;
     const res = await fetch('https://www.coursera.org/api/onDemandSupplementCompletions.v1', {
       method: 'POST',
       credentials: 'include',
@@ -1240,7 +1261,7 @@ async function apiCompleteSupplement(courseId, itemId, userId) {
       body: JSON.stringify({
         courseId: courseId,
         itemId: itemId,
-        userId: parseInt(userId, 10) || 0,
+        userId: uId,
       }),
     });
     if (res.ok) {
@@ -1264,6 +1285,7 @@ async function apiCompleteSupplement(courseId, itemId, userId) {
  */
 async function apiCompleteVideo(userId, courseSlug, courseId, itemId, timeCommitment = 60000) {
   try {
+    const cleanSlug = (courseSlug || '').toLowerCase().trim();
     // Step 1: Get video tracking metadata
     const metaRes = await fetch(
       `https://www.coursera.org/api/onDemandLectureVideos.v1/${courseId}~${itemId}?includes=video&fields=disableSkippingForward,startMs,endMs`,
@@ -1277,18 +1299,21 @@ async function apiCompleteVideo(userId, courseSlug, courseId, itemId, timeCommit
 
     // Step 2: Post play video event
     await fetch(
-      `https://www.coursera.org/api/opencourse.v1/user/${userId}/course/${courseSlug}/item/${itemId}/lecture/videoEvents/play?autoEnroll=false`,
+      `https://www.coursera.org/api/opencourse.v1/user/${userId}/course/${encodeURIComponent(cleanSlug)}/item/${itemId}/lecture/videoEvents/play?autoEnroll=false`,
       {
         method: 'POST',
         credentials: 'include',
-        headers: getApiHeaders(false),
+        headers: getApiHeaders(true),
         body: '{"contentRequestBody":{}}',
       }
     );
 
     // Step 3: Update video progress if trackingId exists
     if (trackingId) {
-      const durationMs = timeCommitment > 0 ? timeCommitment : 60000;
+      let durationMs = 60000;
+      if (typeof timeCommitment === 'number' && timeCommitment > 0) {
+        durationMs = timeCommitment < 1000 ? timeCommitment * 60000 : timeCommitment;
+      }
       await fetch(
         `https://www.coursera.org/api/onDemandVideoProgresses.v1/${userId}~${courseId}~${trackingId}`,
         {
@@ -1305,11 +1330,11 @@ async function apiCompleteVideo(userId, courseSlug, courseId, itemId, timeCommit
 
     // Step 4: Post ended video event
     const endedRes = await fetch(
-      `https://www.coursera.org/api/opencourse.v1/user/${userId}/course/${courseSlug}/item/${itemId}/lecture/videoEvents/ended?autoEnroll=false`,
+      `https://www.coursera.org/api/opencourse.v1/user/${userId}/course/${encodeURIComponent(cleanSlug)}/item/${itemId}/lecture/videoEvents/ended?autoEnroll=false`,
       {
         method: 'POST',
         credentials: 'include',
-        headers: getApiHeaders(false),
+        headers: getApiHeaders(true),
         body: '{"contentRequestBody":{}}',
       }
     );
@@ -2195,6 +2220,7 @@ function setupToggle() {
  * @param {'info'|'success'|'warning'|'error'} type
  */
 function showToast(message, type = 'info') {
+  if (typeof document === 'undefined' || typeof document.getElementById !== 'function') return;
   const toast = document.getElementById('cpt-toast');
   if (!toast) return;
 
@@ -2215,6 +2241,7 @@ function showToast(message, type = 'info') {
  * @param {string} text
  */
 function updateProgress(current, total, text = '') {
+  if (typeof document === 'undefined' || typeof document.getElementById !== 'function') return;
   const container = document.getElementById('cpt-progress');
   const bar = document.getElementById('cpt-progress-bar');
   const textEl = document.getElementById('cpt-progress-text');
@@ -3917,6 +3944,23 @@ async function solveAndSubmitQuiz(outsideUrl = '') {
       if (submitOk) {
         showToast('🎉 Đã nộp bài thành công! Tool sẽ giữ nguyên trang này để bạn xem kết quả.', 'success');
         await chrome.storage.local.remove(STORAGE_KEY_QUIZ);
+
+        // Check if Master Course Autopilot Queue is active
+        try {
+          const queueRes = await chrome.storage.local.get(['cpt_master_autopilot_queue']);
+          const autopilotQueue = queueRes?.cpt_master_autopilot_queue;
+          if (autopilotQueue && autopilotQueue.active) {
+            showToast('🚀 [Master Autopilot]: Chuẩn bị chuyển sang bài Quiz tiếp theo...', 'info');
+            await sleep(2500);
+            if (typeof advanceAutopilotQuizQueue === 'function') {
+              await advanceAutopilotQuizQueue(autopilotQueue);
+              return;
+            } else if (typeof window !== 'undefined' && window.__cpt_advanceAutopilotQuizQueue) {
+              await window.__cpt_advanceAutopilotQuizQueue(autopilotQueue);
+              return;
+            }
+          }
+        } catch (_qErr) {}
       } else {
         showToast('⚠️ Bài thi chưa sẵn sàng nộp hoặc cần bạn kiểm tra lại. Đã giữ nguyên trang!', 'warning');
       }
@@ -5851,17 +5895,21 @@ async function handleAutoAssignment() {
  * Coursera Pro Tool - Master Course Autopilot Module
  * End-to-end 1-Click Course Automation:
  * 1. Crawls entire course syllabus (Weeks 1 to N)
- * 2. Audits completion status via Coursera Progress API
- * 3. Executes Sequential Pipeline: Materials Bypass -> Discussions -> Quizzes
- * 4. Verifies 100% completion with Fail-Safe Auditor
+ * 2. Multi-Pass Material Bypass Engine: Unlocks progressive modules automatically
+ * 3. Stage 1: High-Speed Native API Bypass (videos, readings, widgets, coach, lti)
+ * 4. Stage 2: Anti-Ban Forum Auto-Discussion Solver
+ * 5. Stage 3: Sequential AI Quiz Runner with Smart Retake & State Persistence
+ * 6. Stage 4: Fail-Safe 100% Completion Auditor
  */
+
+const STORAGE_KEY_AUTOPILOT_QUEUE = 'cpt_master_autopilot_queue';
 
 let isAutopilotRunning = false;
 let isAutopilotPaused = false;
 
 /**
  * Check if Autopilot is currently active
- * @returns {boolean}
+ * @returns {{ isRunning: boolean, isPaused: boolean }}
  */
 function getAutopilotState() {
   return {
@@ -5871,11 +5919,17 @@ function getAutopilotState() {
 }
 
 /**
- * Stop the course autopilot process
+ * Stop the course autopilot process and clear any pending queues
  */
-function stopCourseAutopilot() {
+async function stopCourseAutopilot() {
   isAutopilotRunning = false;
   isAutopilotPaused = false;
+  try {
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+      await chrome.storage.local.remove([STORAGE_KEY_AUTOPILOT_QUEUE]);
+    }
+    await cancelAutoDiscussion();
+  } catch (_e) {}
   updateProgress(0, 0, '');
   showToast('Đã dừng Master Course Autopilot.', 'info');
 }
@@ -5901,11 +5955,214 @@ function resumeCourseAutopilot() {
 }
 
 /**
+ * Pure function to classify course items by status and category
+ * @param {Array<object>} allItems
+ * @param {Set<string>} completedIds
+ * @returns {object}
+ */
+function categorizeCourseItems(allItems = [], completedIds = new Set()) {
+  const pendingMaterials = [];
+  const pendingDiscussions = [];
+  const pendingQuizzes = [];
+  const pendingAssignments = [];
+  const lockedItems = [];
+  let completedCount = 0;
+
+  for (const item of allItems) {
+    if (!item || !item.id) continue;
+
+    if (completedIds.has(item.id)) {
+      completedCount++;
+      continue;
+    }
+
+    if (item.isLocked) {
+      lockedItems.push(item);
+      continue;
+    }
+
+    const type = (item.contentSummary?.typeName || '').toLowerCase();
+    const slug = (item.slug || '').toLowerCase();
+    const name = (item.name || '').toLowerCase();
+
+    if (type === 'lecture' || type === 'supplement' || type === 'coach' || type === 'ungradedwidget' || type === 'ungradedlti') {
+      pendingMaterials.push(item);
+    } else if (type === 'discussionprompt' || slug.includes('discussion-prompt') || name.includes('discussion prompt')) {
+      pendingDiscussions.push(item);
+    } else if (
+      type === 'quiz' ||
+      type === 'exam' ||
+      type === 'ungradedassignment' ||
+      type === 'staffgraded' ||
+      type === 'gradedassignment' ||
+      slug.includes('quiz') ||
+      slug.includes('exam')
+    ) {
+      pendingQuizzes.push(item);
+    } else if (type === 'peer' || type === 'phasedpeer' || slug.includes('peer')) {
+      pendingAssignments.push(item);
+    } else {
+      pendingMaterials.push(item);
+    }
+  }
+
+  const totalCount = allItems.length;
+  const completionPercent = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
+
+  return {
+    pendingMaterials,
+    pendingDiscussions,
+    pendingQuizzes,
+    pendingAssignments,
+    lockedItems,
+    completedCount,
+    totalCount,
+    completionPercent,
+  };
+}
+
+/**
+ * Run final audit comparing course syllabus against completed items
+ * @param {string} userId
+ * @param {string} courseId
+ * @param {string} courseSlug
+ * @returns {Promise<{ isComplete: boolean, completedCount: number, totalCount: number, remaining: Array }>}
+ */
+async function runFinalAudit(userId, courseId, courseSlug) {
+  showToast('🔍 Đang kiểm toán lại tiến độ hoàn thành toàn bộ khóa học...', 'info');
+  await sleep(1800);
+
+  const [structureData, finalCompleted] = await Promise.all([
+    fetchCourseStructure(courseSlug),
+    fetchCourseCompletedItems(userId, courseId),
+  ]);
+
+  const allItems = structureData?.linked?.['onDemandCourseMaterialItems.v2'] || [];
+  const { completedCount, totalCount, pendingMaterials, pendingQuizzes, pendingDiscussions, pendingAssignments } =
+    categorizeCourseItems(allItems, finalCompleted);
+
+  const remainingTotal = pendingMaterials.length + pendingQuizzes.length + pendingDiscussions.length + pendingAssignments.length;
+
+  if (remainingTotal === 0 && totalCount > 0) {
+    showToast('🏆 XUẤT SẮC! Toàn bộ khóa học đã đạt 100% tích xanh, chứng chỉ đã sẵn sàng!', 'success');
+    updateProgress(100, 100, 'Khóa học hoàn thành 100%!');
+    return { isComplete: true, completedCount: totalCount, totalCount, remaining: [] };
+  } else {
+    showToast(
+      `✨ Hoàn thành ${completedCount}/${totalCount} bài (${Math.round((completedCount / totalCount) * 100)}%)! Còn ${remainingTotal} bài chưa đạt yêu cầu.`,
+      'info'
+    );
+    updateProgress(completedCount, totalCount, `Tiến độ: ${completedCount}/${totalCount} (${Math.round((completedCount / totalCount) * 100)}%)`);
+    return { isComplete: false, completedCount, totalCount, remaining: [...pendingMaterials, ...pendingQuizzes] };
+  }
+}
+
+/**
+ * Advance the Autopilot Quiz Queue to the next quiz
+ * @param {object} queue
+ */
+async function advanceAutopilotQuizQueue(queue) {
+  if (!queue || !Array.isArray(queue.quizzes)) return;
+
+  queue.currentIndex++;
+  if (queue.currentIndex >= queue.quizzes.length) {
+    // All quizzes completed!
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+      await chrome.storage.local.remove([STORAGE_KEY_AUTOPILOT_QUEUE]);
+    }
+    showToast('🏆 Đã hoàn thành tất cả bài Quiz trong khóa học!', 'success');
+    await sleep(2000);
+    const welcomeUrl = `https://www.coursera.org/learn/${queue.courseSlug}/home/welcome`;
+    window.location.href = welcomeUrl;
+  } else {
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+      await chrome.storage.local.set({ [STORAGE_KEY_AUTOPILOT_QUEUE]: queue });
+    }
+    const nextQuiz = queue.quizzes[queue.currentIndex];
+    const nextUrl = nextQuiz.slug
+      ? `https://www.coursera.org/learn/${queue.courseSlug}/exam/${nextQuiz.id}/${nextQuiz.slug}`
+      : `https://www.coursera.org/learn/${queue.courseSlug}/item/${nextQuiz.id}`;
+
+    showToast(`➡️ Đang chuyển sang Quiz tiếp theo (${queue.currentIndex + 1}/${queue.quizzes.length}): "${nextQuiz.name}"...`, 'info');
+    await sleep(2000);
+    window.location.href = nextUrl;
+  }
+}
+
+/**
+ * Check and resume Autopilot Quiz queue across page reloads & SPA transitions
+ */
+async function checkAndResumeCourseAutopilot() {
+  try {
+    if (typeof chrome === 'undefined' || !chrome.storage?.local) return;
+
+    const result = await chrome.storage.local.get([STORAGE_KEY_AUTOPILOT_QUEUE]);
+    const queue = result[STORAGE_KEY_AUTOPILOT_QUEUE];
+    if (!queue || !queue.active) return;
+
+    // Safety expiration: 1 hour
+    if (Date.now() - (queue.startTime || 0) > 3600000) {
+      await chrome.storage.local.remove([STORAGE_KEY_AUTOPILOT_QUEUE]);
+      return;
+    }
+
+    const currentQuiz = queue.quizzes?.[queue.currentIndex];
+    if (!currentQuiz) {
+      await chrome.storage.local.remove([STORAGE_KEY_AUTOPILOT_QUEUE]);
+      await runFinalAudit(queue.userId, queue.courseId, queue.courseSlug);
+      return;
+    }
+
+    console.log(`[CourseraPro Autopilot] Resuming quiz ${queue.currentIndex + 1}/${queue.quizzes.length}: ${currentQuiz.name}`);
+    showToast(
+      `🚀 [Master Autopilot]: Đang xử lý Quiz ${queue.currentIndex + 1}/${queue.quizzes.length}: "${currentQuiz.name}"...`,
+      'info'
+    );
+
+    // If currently inside /attempt: auto-solve
+    if (location.href.includes('/attempt')) {
+      const { solveAndSubmitQuiz } = await import('./quiz.js');
+      await sleep(1500);
+      await solveAndSubmitQuiz();
+      return;
+    }
+
+    // If currently on /review feedback page: advance to next quiz
+    if (location.href.includes('/review')) {
+      await sleep(2000);
+      await advanceAutopilotQuizQueue(queue);
+      return;
+    }
+
+    // If on assignment overview page: look for enter button
+    const enterBtn = Array.from(document.querySelectorAll('button, a')).find((el) => {
+      const t = el.textContent.trim().toLowerCase();
+      return t === 'start' || t === 'resume' || t === 'bắt đầu' || t === 'tiếp tục' || t === 'try again' || t === 'làm lại';
+    });
+
+    if (enterBtn) {
+      showToast('Đang bấm vào bài làm (Resume / Start)...', 'info');
+      await sleep(1200);
+      enterBtn.click();
+    } else {
+      // Direct navigation into /attempt
+      const cleanUrl = location.href.split('?')[0].replace(/\/$/, '');
+      if (!cleanUrl.includes('/attempt')) {
+        await sleep(1500);
+        window.location.href = `${cleanUrl}/attempt`;
+      }
+    }
+  } catch (err) {
+    console.warn('[CourseraPro Autopilot] checkAndResume error:', err);
+  }
+}
+
+/**
  * Main entry point for Master Course Autopilot
  */
 async function startCourseAutopilot() {
   if (isAutopilotRunning) {
-    stopCourseAutopilot();
+    await stopCourseAutopilot();
     return;
   }
 
@@ -5914,7 +6171,7 @@ async function startCourseAutopilot() {
 
   try {
     const meta = getMetadata();
-    const courseSlug = meta.open_course_slug || getCourseSlug();
+    const courseSlug = (meta.open_course_slug || getCourseSlug() || '').toLowerCase().trim();
     if (!courseSlug) {
       showToast('⚠️ Không phát hiện được khóa học hiện tại. Hãy mở trang khóa học Coursera!', 'error');
       isAutopilotRunning = false;
@@ -5930,9 +6187,15 @@ async function startCourseAutopilot() {
       fetchCourseStructure(courseSlug),
     ]);
 
+    if (!userId) {
+      showToast('⚠️ Chưa lấy được User ID. Vui lòng đảm bảo bạn đã đăng nhập Coursera!', 'error');
+      isAutopilotRunning = false;
+      return;
+    }
+
     const courseId = structureData?.elements?.[0]?.id || meta.course_id;
     if (!courseId) {
-      showToast('⚠️ Không tìm thấy Course ID. Hãy đảm bảo bạn đã đăng nhập và ghi danh khóa học!', 'error');
+      showToast('⚠️ Không tìm thấy Course ID. Hãy đảm bảo bạn đã ghi danh môn học!', 'error');
       isAutopilotRunning = false;
       return;
     }
@@ -5946,39 +6209,15 @@ async function startCourseAutopilot() {
       return;
     }
 
-    showToast(`📚 Tìm thấy ${modules.length} tuần học với tổng cộng ${allItems.length} bài học! Đang kiểm tra tiến độ...`, 'info');
+    showToast(`📚 Tìm thấy ${modules.length} tuần học với tổng cộng ${allItems.length} bài học! Bắt đầu kiểm toán tiến độ...`, 'info');
 
-    // 2. Fetch Completed Items
-    const completedItems = await fetchCourseCompletedItems(userId, courseId);
-    console.log(`[CourseraPro Autopilot] Completed items: ${completedItems.size}/${allItems.length}`);
+    // 2. Fetch Initial Progress
+    const initialCompleted = await fetchCourseCompletedItems(userId, courseId);
+    let category = categorizeCourseItems(allItems, initialCompleted);
 
-    // Categorize pending items
-    const pendingMaterials = [];
-    const pendingDiscussions = [];
-    const pendingQuizzes = [];
-    const pendingAssignments = [];
+    console.log(`[CourseraPro Autopilot] Initial progress: ${category.completedCount}/${allItems.length} (${category.completionPercent}%)`);
 
-    for (const item of allItems) {
-      if (completedItems.has(item.id)) continue;
-      if (item.isLocked) continue;
-
-      const type = item.contentSummary?.typeName || '';
-      const slug = item.slug || '';
-
-      if (type === 'lecture' || type === 'supplement' || type === 'coach' || type === 'ungradedWidget' || type === 'ungradedLti') {
-        pendingMaterials.push(item);
-      } else if (type === 'discussionPrompt' || slug.includes('discussion-prompt')) {
-        pendingDiscussions.push(item);
-      } else if (type === 'quiz' || type === 'exam' || type === 'ungradedAssignment' || type === 'staffGraded') {
-        pendingQuizzes.push(item);
-      } else if (type === 'peer' || type === 'phasedPeer') {
-        pendingAssignments.push(item);
-      } else {
-        pendingMaterials.push(item);
-      }
-    }
-
-    const totalPending = pendingMaterials.length + pendingDiscussions.length + pendingQuizzes.length + pendingAssignments.length;
+    const totalPending = category.pendingMaterials.length + category.pendingDiscussions.length + category.pendingQuizzes.length + category.pendingAssignments.length;
     if (totalPending === 0) {
       showToast('🎉 Chúc mừng! Toàn bộ khóa học đã hoàn thành 100% tích xanh!', 'success');
       updateProgress(100, 100, 'Đã hoàn thành 100%!');
@@ -5986,79 +6225,146 @@ async function startCourseAutopilot() {
       return;
     }
 
-    showToast(`🎯 Cần xử lý ${totalPending} bài: ${pendingMaterials.length} video/bài đọc, ${pendingDiscussions.length} thảo luận, ${pendingQuizzes.length} bài tập trắc nghiệm.`, 'info');
+    showToast(
+      `🎯 Cần xử lý ${totalPending} bài: ${category.pendingMaterials.length} video/bài đọc, ${category.pendingDiscussions.length} thảo luận, ${category.pendingQuizzes.length} bài tập trắc nghiệm.`,
+      'info'
+    );
 
-    // 3. STAGE 1: Fast Native API Material Bypass
-    if (pendingMaterials.length > 0) {
-      showToast(`⚡ [GIAI ĐOẠN 1/3]: Bắt đầu Bypass thần tốc ${pendingMaterials.length} video và bài đọc...`, 'info');
+    // 3. STAGE 1: Dynamic Multi-Pass Fast Material Bypass (Unlocks subsequent weeks automatically!)
+    let pass = 1;
+    const maxPasses = 8;
+    const failedItemIds = new Set();
+    let totalMaterialsProcessed = 0;
 
-      for (let i = 0; i < pendingMaterials.length; i++) {
+    while (isAutopilotRunning && pass <= maxPasses) {
+      // Refresh completion state & structure to detect newly unlocked modules
+      const currentCompleted = await fetchCourseCompletedItems(userId, courseId);
+      const freshStructure = pass === 1 ? structureData : await fetchCourseStructure(courseSlug);
+      const currentItems = freshStructure?.linked?.['onDemandCourseMaterialItems.v2'] || allItems;
+
+      const currentCategory = categorizeCourseItems(currentItems, currentCompleted);
+      const unlockedMaterials = currentCategory.pendingMaterials.filter((it) => !it.isLocked && !failedItemIds.has(it.id));
+
+      if (unlockedMaterials.length === 0) {
+        // No more unlocked materials left to bypass in this pass
+        break;
+      }
+
+      showToast(`⚡ [GIAI ĐOẠN 1 - ĐỢT ${pass}]: Bắt đầu Bypass thần tốc ${unlockedMaterials.length} bài học đã mở khóa...`, 'info');
+
+      for (let i = 0; i < unlockedMaterials.length; i++) {
         if (!isAutopilotRunning) break;
         while (isAutopilotPaused) {
-          await sleep(1000);
+          if (!isAutopilotRunning) break;
+          await sleep(500);
         }
+        if (!isAutopilotRunning) break;
 
-        const item = pendingMaterials[i];
-        const type = item.contentSummary?.typeName || '';
-        const progressPercent = Math.round(((i + 1) / pendingMaterials.length) * 40);
-        updateProgress(i + 1, pendingMaterials.length, `[Giai đoạn 1] (${i + 1}/${pendingMaterials.length}): ${item.name || 'Bài học'}`);
+        const item = unlockedMaterials[i];
+        const type = (item.contentSummary?.typeName || '').toLowerCase();
+        totalMaterialsProcessed++;
 
+        updateProgress(
+          i + 1,
+          unlockedMaterials.length,
+          `[Giai đoạn 1] (${i + 1}/${unlockedMaterials.length}): ${item.name || 'Bài học'}`
+        );
+
+        let success = false;
         try {
           if (type === 'supplement') {
-            await apiCompleteSupplement(courseId, item.id, userId);
+            success = await apiCompleteSupplement(courseId, item.id, userId);
           } else if (type === 'lecture') {
-            await apiCompleteVideo(userId, courseSlug, courseId, item.id, item.timeCommitment);
+            success = await apiCompleteVideo(userId, courseSlug, courseId, item.id, item.timeCommitment);
           } else if (type === 'coach') {
-            await apiCompleteCoach(userId, courseId, item.id);
-          } else if (type === 'ungradedWidget') {
-            await apiCompleteWidget(userId, courseId, item.id);
-          } else if (type === 'ungradedLti') {
-            await apiCompleteLti(userId, courseId, item.id);
+            success = await apiCompleteCoach(userId, courseId, item.id);
+          } else if (type === 'ungradedwidget') {
+            success = await apiCompleteWidget(userId, courseId, item.id);
+          } else if (type === 'ungradedlti') {
+            success = await apiCompleteLti(userId, courseId, item.id);
           } else {
-            // General attempt
-            await apiCompleteSupplement(courseId, item.id, userId);
+            success = await apiCompleteSupplement(courseId, item.id, userId);
           }
         } catch (err) {
           console.warn('[CourseraPro Autopilot] Material item error:', item.name, err);
         }
 
+        if (!success) {
+          failedItemIds.add(item.id);
+        }
+
         await sleep(350); // Small jitter delay to protect account
       }
 
-      showToast(`✅ [GIAI ĐOẠN 1/3 HOÀN TẤT]: Đã xử lý xong toàn bộ video và bài đọc của khóa!`, 'success');
+      pass++;
+      await sleep(1000);
+    }
+
+    if (!isAutopilotRunning) return;
+
+    if (totalMaterialsProcessed > 0) {
+      showToast(`✅ [GIAI ĐOẠN 1 HOÀN TẤT]: Đã xử lý ${totalMaterialsProcessed} bài học video và bài đọc!`, 'success');
       await sleep(1500);
     }
 
-    // 4. STAGE 2: Discussions (Zero-Navigation Background Worker with Anti-Ban Delay)
-    if (isAutopilotRunning && pendingDiscussions.length > 0) {
-      showToast(`💬 [GIAI ĐOẠN 2/3]: Bắt đầu xử lý ${pendingDiscussions.length} bài thảo luận diễn đàn...`, 'info');
-      await startAutoAllDiscussions();
-      await sleep(2000);
+    // 4. STAGE 2: Anti-Ban Forum Auto-Discussions
+    if (isAutopilotRunning) {
+      const refreshedCompleted = await fetchCourseCompletedItems(userId, courseId);
+      const postStage1Category = categorizeCourseItems(allItems, refreshedCompleted);
+
+      if (postStage1Category.pendingDiscussions.length > 0) {
+        showToast(`💬 [GIAI ĐOẠN 2/3]: Bắt đầu xử lý ${postStage1Category.pendingDiscussions.length} bài thảo luận diễn đàn...`, 'info');
+        await startAutoAllDiscussions();
+        await sleep(2000);
+      }
     }
 
-    // 5. STAGE 3: Quizzes / Exams / Assignments
-    if (isAutopilotRunning && pendingQuizzes.length > 0) {
+    if (!isAutopilotRunning) return;
+
+    // 5. STAGE 3: Sequential AI Quiz Runner with Persistence
+    const finalCheckCompleted = await fetchCourseCompletedItems(userId, courseId);
+    const postStage2Category = categorizeCourseItems(allItems, finalCheckCompleted);
+    const unlockedQuizzes = postStage2Category.pendingQuizzes.filter((q) => !q.isLocked);
+
+    if (isAutopilotRunning && unlockedQuizzes.length > 0) {
       showToast(
-        `📝 [GIAI ĐOẠN 3/3]: Khóa học có ${pendingQuizzes.length} bài quiz/kiểm tra. Bạn chỉ cần click vào từng quiz và bấm "Auto Quiz", AI sẽ giải 100%!`,
+        `📝 [GIAI ĐOẠN 3/3]: Phát hiện ${unlockedQuizzes.length} bài Quiz/Exam cần giải! Bắt đầu chuỗi tự động giải AI...`,
         'info'
       );
+
+      const quizQueue = {
+        active: true,
+        courseSlug,
+        userId,
+        courseId,
+        quizzes: unlockedQuizzes.map((q) => ({
+          id: q.id,
+          slug: q.slug || '',
+          name: q.name || 'Quiz',
+          typeName: q.contentSummary?.typeName || 'quiz',
+        })),
+        currentIndex: 0,
+        startTime: Date.now(),
+      };
+
+      if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+        await chrome.storage.local.set({ [STORAGE_KEY_AUTOPILOT_QUEUE]: quizQueue });
+      }
+
+      const firstQuiz = quizQueue.quizzes[0];
+      const targetUrl = firstQuiz.slug
+        ? `https://www.coursera.org/learn/${courseSlug}/exam/${firstQuiz.id}/${firstQuiz.slug}`
+        : `https://www.coursera.org/learn/${courseSlug}/item/${firstQuiz.id}`;
+
+      showToast(`🚀 Đang chuyển đến bài Quiz 1/${unlockedQuizzes.length}: "${firstQuiz.name}"...`, 'info');
+      await sleep(2000);
+      window.location.href = targetUrl;
+      return; // Hand-off to checkAndResumeCourseAutopilot on the quiz page!
     }
 
     // 6. STAGE 4: Final Fail-Safe Audit
     if (isAutopilotRunning) {
-      showToast('🔍 Đang kiểm toán lại tiến độ hoàn thành toàn bộ khóa học...', 'info');
-      await sleep(2000);
-
-      const finalCompleted = await fetchCourseCompletedItems(userId, courseId);
-      const remaining = allItems.filter((it) => !finalCompleted.has(it.id) && !it.isLocked);
-
-      if (remaining.length === 0) {
-        showToast('🏆 XUẤT SẮC! Toàn bộ môn học đã đạt 100% tích xanh, chứng chỉ đã sẵn sàng!', 'success');
-        updateProgress(100, 100, 'Khóa học hoàn thành 100%!');
-      } else {
-        showToast(`✨ Đã hoàn thành phần lớn khóa học! Còn ${remaining.length} bài (chủ yếu là Quiz/Peer), hãy bấm giải để nhận chứng chỉ!`, 'success');
-        updateProgress(allItems.length - remaining.length, allItems.length, `Tiến độ: ${allItems.length - remaining.length}/${allItems.length}`);
-      }
+      await runFinalAudit(userId, courseId, courseSlug);
     }
   } catch (err) {
     console.error('[CourseraPro] Autopilot error:', err);
@@ -6257,9 +6563,10 @@ function init() {
   // Inject panel immediately
   ensurePanel();
 
-  // Check if there is an active auto-discussion, auto-quiz, or auto-review process to resume
+  // Check if there is an active auto-discussion, auto-quiz, auto-autopilot, or auto-review process to resume
   checkAndResumeDiscussionAutomation();
   checkAndResumeAutoQuiz();
+  checkAndResumeCourseAutopilot();
   checkAndResumeAutoReview();
   checkAndRecordReviewFeedback();
 
@@ -6268,6 +6575,7 @@ function init() {
     setTimeout(() => {
       checkAndResumeDiscussionAutomation();
       checkAndResumeAutoQuiz();
+      checkAndResumeCourseAutopilot();
       checkAndResumeAutoReview();
       checkAndRecordReviewFeedback();
     }, 1200);
@@ -6282,6 +6590,7 @@ function init() {
       console.log('[CourseraPro] SPA route change detected:', lastMonitoredUrl);
       checkAndResumeDiscussionAutomation();
       checkAndResumeAutoQuiz();
+      checkAndResumeCourseAutopilot();
       checkAndResumeAutoReview();
     }
     

@@ -1274,6 +1274,23 @@ export async function solveAndSubmitQuiz(outsideUrl = '') {
       if (submitOk) {
         showToast('🎉 Đã nộp bài thành công! Tool sẽ giữ nguyên trang này để bạn xem kết quả.', 'success');
         await chrome.storage.local.remove(STORAGE_KEY_QUIZ);
+
+        // Check if Master Course Autopilot Queue is active
+        try {
+          const queueRes = await chrome.storage.local.get(['cpt_master_autopilot_queue']);
+          const autopilotQueue = queueRes?.cpt_master_autopilot_queue;
+          if (autopilotQueue && autopilotQueue.active) {
+            showToast('🚀 [Master Autopilot]: Chuẩn bị chuyển sang bài Quiz tiếp theo...', 'info');
+            await sleep(2500);
+            if (typeof advanceAutopilotQuizQueue === 'function') {
+              await advanceAutopilotQuizQueue(autopilotQueue);
+              return;
+            } else if (typeof window !== 'undefined' && window.__cpt_advanceAutopilotQuizQueue) {
+              await window.__cpt_advanceAutopilotQuizQueue(autopilotQueue);
+              return;
+            }
+          }
+        } catch (_qErr) {}
       } else {
         showToast('⚠️ Bài thi chưa sẵn sàng nộp hoặc cần bạn kiểm tra lại. Đã giữ nguyên trang!', 'warning');
       }

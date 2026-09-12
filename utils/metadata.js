@@ -56,13 +56,12 @@ export function getMetadata() {
     }
   } catch (_e) {}
 
-  // 3. URL-based parsing fallback
-  const url = location.href;
+  const url = typeof location !== 'undefined' ? location.href : '';
   const match = url.match(
-    /coursera\.org\/learn\/([^/]+)(?:\/([^/]+))?(?:\/([^/]+))?(?:\/([^/]+))?/
+    /(?:coursera\.org)?(?:\/programs\/[^/?#]+\/|\/browse\/[^/?#]+\/)?(?:learn|course)\/([^/?#]+)(?:\/([^/?#]+))?(?:\/([^/?#]+))?(?:\/([^/?#]+))?/i
   );
 
-  const slug = match ? match[1] || '' : '';
+  const slug = match ? match[1].toLowerCase() : getCourseSlug();
   const section = match ? match[2] || '' : '';
   const week = match ? match[3] || '' : '';
   const extractedId = extractItemId() || (match ? match[4] || '' : '');
@@ -139,9 +138,11 @@ export function extractUserId() {
  * Extract course slug from URL
  * @returns {string}
  */
-export function getCourseSlug() {
-  const match = location.href.match(/\/learn\/([^/]+)/);
-  return match ? match[1] : '';
+export function getCourseSlug(url = '') {
+  const targetUrl = url || (typeof location !== 'undefined' ? location.href : '');
+  if (!targetUrl) return '';
+  const match = targetUrl.match(/(?:\/learn\/|\/course\/)([^/?#]+)/i);
+  return match ? match[1].toLowerCase() : '';
 }
 
 /**

@@ -608,6 +608,7 @@ function setupToggle() {
  * @param {'info'|'success'|'warning'|'error'} type
  */
 export function showToast(message, type = 'info') {
+  if (typeof document === 'undefined' || typeof document.getElementById !== 'function') return;
   const toast = document.getElementById('cpt-toast');
   if (!toast) return;
 
@@ -628,6 +629,7 @@ export function showToast(message, type = 'info') {
  * @param {string} text
  */
 export function updateProgress(current, total, text = '') {
+  if (typeof document === 'undefined' || typeof document.getElementById !== 'function') return;
   const container = document.getElementById('cpt-progress');
   const bar = document.getElementById('cpt-progress-bar');
   const textEl = document.getElementById('cpt-progress-text');
