@@ -23,6 +23,7 @@ const files = [
   'modules/review.js',
   'modules/grading.js',
   'modules/assignment.js',
+  'modules/autopilot.js',
   'content/main.js',
 ];
 
