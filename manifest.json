@@ -1,0 +1,54 @@
+{
+  "name": "Coursera Pro Tool",
+  "description": "Advanced toolkit for Coursera: bypass videos/readings, auto quiz with AI, auto discussion, peer review automation, and lockdown browser bypass.",
+  "version": "2.0.0",
+  "manifest_version": 3,
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": "icons/icon-48.png"
+  },
+  "background": {
+    "service_worker": "background/service-worker.js"
+  },
+  "content_scripts": [
+    {
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "ui/styles.css"
+      ],
+      "matches": [
+        "*://*.coursera.org/*"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "matches": [
+        "*://*.coursera.org/*"
+      ],
+      "resources": [
+        "inject/script.js",
+        "icons/icon-48.png",
+        "icons/cyber-orb.png"
+      ]
+    }
+  ],
+  "permissions": [
+    "storage",
+    "cookies",
+    "tabs",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "*://*.coursera.org/*",
+    "https://generativelanguage.googleapis.com/*"
+  ]
+}

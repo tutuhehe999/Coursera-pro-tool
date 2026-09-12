@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Welcome - Coursera Pro Tool</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background: linear-gradient(160deg, #0f0f14 0%, #18182b 50%, #0f0f14 100%);
+      color: #e4e4e7;
+      line-height: 1.6;
+    }
+
+    .card {
+      max-width: 520px;
+      margin: 40px 20px;
+      padding: 48px 40px;
+      background: rgba(30, 30, 48, 0.6);
+      border: 1px solid rgba(99, 102, 241, 0.12);
+      border-radius: 20px;
+      backdrop-filter: blur(20px);
+      box-shadow:
+        0 40px 80px -20px rgba(0, 0, 0, 0.5),
+        0 0 60px -30px rgba(99, 102, 241, 0.2);
+    }
+
+    .eyebrow {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: #818cf8;
+      margin-bottom: 16px;
+    }
+
+    h1 {
+      font-size: clamp(2rem, 5vw, 3rem);
+      font-weight: 800;
+      letter-spacing: -0.04em;
+      line-height: 1;
+      margin-bottom: 20px;
+    }
+
+    .accent {
+      background: linear-gradient(135deg, #818cf8, #a78bfa, #c084fc);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .body-text {
+      color: #a1a1aa;
+      font-size: 14px;
+      margin-bottom: 12px;
+    }
+
+    .body-text strong { color: #e4e4e7; }
+
+    .features {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin: 24px 0;
+      list-style: none;
+    }
+
+    .features li {
+      padding: 10px 12px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.02);
+      font-size: 12px;
+      color: #a1a1aa;
+      transition: all 0.2s;
+    }
+
+    .features li:hover {
+      background: rgba(99, 102, 241, 0.06);
+      border-color: rgba(99, 102, 241, 0.15);
+    }
+
+    .features li strong {
+      display: block;
+      color: #e4e4e7;
+      font-size: 12px;
+      margin-bottom: 2px;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 24px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 10px 20px;
+      border-radius: 10px;
+      font-size: 13px;
+      font-weight: 600;
+      font-family: inherit;
+      text-decoration: none;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      border: 1px solid rgba(99, 102, 241, 0.5);
+      color: #fff;
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 20px -4px rgba(99, 102, 241, 0.4);
+    }
+
+    .btn-secondary {
+      background: transparent;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: #a1a1aa;
+    }
+
+    .btn-secondary:hover {
+      border-color: rgba(255, 255, 255, 0.2);
+      color: #e4e4e7;
+      transform: translateY(-2px);
+    }
+
+    .warning {
+      margin-top: 20px;
+      padding: 10px 14px;
+      border-radius: 8px;
+      background: rgba(245, 158, 11, 0.08);
+      border: 1px solid rgba(245, 158, 11, 0.15);
+      font-size: 11px;
+      color: #fbbf24;
+    }
+
+    @media (max-width: 480px) {
+      .card { padding: 28px 20px; }
+      .features { grid-template-columns: 1fr; }
+      .actions { flex-direction: column; }
+      .btn { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <span class="eyebrow">✨ Thanks for installing</span>
+    <h1>Welcome to<br>Coursera<span class="accent">Pro</span></h1>
+
+    <p class="body-text">
+      A powerful browser extension that helps you navigate Coursera more efficiently with
+      <strong>AI-powered automation</strong>.
+    </p>
+
+    <ul class="features">
+      <li><strong>⚡ Bypass Week</strong>Skip videos &amp; readings instantly</li>
+      <li><strong>🧠 Auto Quiz</strong>AI answers quiz questions</li>
+      <li><strong>💬 Discussion</strong>AI-generated responses</li>
+      <li><strong>⭐ Peer Review</strong>Automate review process</li>
+      <li><strong>🔓 Lockdown Bypass</strong>No browser lock needed</li>
+      <li><strong>📊 Request Grade</strong>Quick grading request</li>
+    </ul>
+
+    <p class="body-text">
+      <strong>Get started:</strong> Click the extension icon in your toolbar and enter your
+      <a href="https://aistudio.google.com/app/apikey" target="_blank" style="color:#818cf8;">free Gemini API key</a>
+      for AI features.
+    </p>
+
+    <div class="actions">
+      <a class="btn btn-primary" href="https://www.coursera.org/" target="_blank">Open Coursera</a>
+      <a class="btn btn-secondary" href="https://aistudio.google.com/app/apikey" target="_blank">Get API Key</a>
+    </div>
+
+    <div class="warning">
+      ⚠️ <strong>Educational use only.</strong> Complete official work yourself. AI answers may be inaccurate.
+    </div>
+  </main>
+</body>
+</html>
