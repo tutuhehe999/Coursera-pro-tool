@@ -507,3 +507,62 @@ export async function fetchPeerSubmissionInfo(courseId, itemId, userId = '') {
 
   return {};
 }
+
+/**
+ * Initiate an attempt session via Coursera GraphQL Gateway
+ * Creates the in-progress draft attempt on the backend so /attempt does not render blank.
+ * @param {string} courseId
+ * @param {string} itemId
+ * @returns {Promise<boolean>}
+ */
+export async function apiInitiateAttempt(courseId, itemId) {
+  if (!courseId || !itemId) return false;
+  const graphqlBody = [
+    {
+      operationName: 'Submission_StartAttempt',
+      variables: {
+        courseId: courseId,
+        itemId: itemId,
+      },
+      query: `mutation Submission_StartAttempt($courseId: ID!, $itemId: ID!) {
+  Submission_StartAttempt(input: {courseId: $courseId, itemId: $itemId}) {
+    ... on Submission_StartAttemptSuccess {
+      submissionState {
+        assignment {
+          id
+          __typename
+        }
+        __typename
+      }
+      __typename
+    }
+    ... on Submission_StartAttemptFailure {
+      errors {
+        errorCode
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+}`,
+    },
+  ];
+
+  try {
+    const res = await fetch('https://www.coursera.org/graphql-gateway?opname=Submission_StartAttempt', {
+      method: 'POST',
+      credentials: 'include',
+      headers: getApiHeaders(true),
+      body: JSON.stringify(graphqlBody),
+    });
+
+    if (res.ok) {
+      const text = await res.text();
+      return text.includes('Submission_StartAttemptSuccess') || text.includes('submissionState');
+    }
+  } catch (err) {
+    console.warn('[CourseraPro] apiInitiateAttempt error:', err);
+  }
+  return false;
+}

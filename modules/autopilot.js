@@ -21,7 +21,9 @@ import {
   apiCompleteWidget,
   apiCompleteCoach,
   apiCompleteLti,
+  apiInitiateAttempt,
 } from '../utils/coursera-api.js';
+import { findQuizEnterButton, waitForQuizEnterButton } from './quiz.js';
 import { startAutoAllDiscussions, cancelAutoDiscussion } from './discussion.js';
 
 export const STORAGE_KEY_AUTOPILOT_QUEUE = 'cpt_master_autopilot_queue';
@@ -256,22 +258,35 @@ export async function checkAndResumeCourseAutopilot() {
       return;
     }
 
-    // If on assignment overview page: look for enter button
-    const enterBtn = Array.from(document.querySelectorAll('button, a')).find((el) => {
-      const t = el.textContent.trim().toLowerCase();
-      return t === 'start' || t === 'resume' || t === 'bắt đầu' || t === 'tiếp tục' || t === 'try again' || t === 'làm lại';
-    });
+    // If on assignment overview page: look for enter button with polling
+    const enterBtn = await waitForQuizEnterButton(6000);
 
     if (enterBtn) {
       showToast('Đang bấm vào bài làm (Resume / Start)...', 'info');
-      await sleep(1200);
+      await sleep(1000);
       enterBtn.click();
+      await sleep(1200);
+      const modalConfirmBtn = Array.from(document.querySelectorAll('[role="dialog"] button, .modal button, .rc-Modal button')).find(
+        (b) => {
+          const t = b.textContent.trim().toLowerCase();
+          return t === 'continue' || t === 'tiếp tục';
+        }
+      );
+      if (modalConfirmBtn) modalConfirmBtn.click();
     } else {
-      // Direct navigation into /attempt
+      // Button not found, initiate attempt on backend via GraphQL before navigation
+      let initiated = false;
+      if (queue.courseId && currentQuiz.id) {
+        showToast('Đang khởi tạo phiên làm bài qua Coursera API...', 'info');
+        initiated = await apiInitiateAttempt(queue.courseId, currentQuiz.id);
+      }
+
       const cleanUrl = location.href.split('?')[0].replace(/\/$/, '');
-      if (!cleanUrl.includes('/attempt')) {
+      if (initiated && !cleanUrl.includes('/attempt')) {
         await sleep(1500);
         window.location.href = `${cleanUrl}/attempt`;
+      } else if (!cleanUrl.includes('/attempt')) {
+        showToast('⚠️ Vui lòng bấm nút "Bắt đầu làm bài" trên trang để Autopilot tự giải!', 'warning');
       }
     }
   } catch (err) {

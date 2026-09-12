@@ -10,6 +10,8 @@
 import { waitForSelector, sleep, safeClick, addBadge, simulateInput, simulateTyping, extendStringPrototype } from '../utils/dom.js';
 import { generateQuizAnswers, generateContent, getAISettings } from '../utils/ai.js';
 import { showToast, updateProgress } from '../ui/panel.js';
+import { getMetadata, extractItemId } from '../utils/metadata.js';
+import { apiInitiateAttempt } from '../utils/coursera-api.js';
 
 const STORAGE_KEY_QUIZ = 'cpt_auto_quiz';
 
@@ -853,11 +855,21 @@ CRITICAL RULE: Respond with ONLY the exact text of the correct choice or its let
  * Find the button to enter the quiz from the landing page
  * @returns {Element|null}
  */
-function findQuizEnterButton() {
+export function findQuizEnterButton() {
   const enterSelectors = [
     'button[data-testid="start-quiz-button"]',
     'button[data-testid="resume-assignment-button"]',
     'button[data-testid="take-quiz-button"]',
+    'button[data-testid="go-to-assignment-button"]',
+    'button[data-testid="start-button"]',
+    'button[data-testid*="start" i]',
+    'button[data-testid*="resume" i]',
+    'button[data-testid*="assignment" i]',
+    'button[data-track-component="start_assignment_button"]',
+    'button[data-track-component="resume_assignment_button"]',
+    'button[data-track-component="go_to_assignment_button"]',
+    'button.rc-StartAssignmentButton',
+    'button.rc-ResumeAssignmentButton',
     'a[href*="/attempt"]',
     'button[aria-label="Resume"]',
     'button[aria-label="Start"]',
@@ -865,24 +877,32 @@ function findQuizEnterButton() {
 
   for (const sel of enterSelectors) {
     const el = document.querySelector(sel);
-    if (el && el.offsetParent !== null) return el;
+    if (el && !el.closest('#cpt-panel') && el.offsetParent !== null) return el;
   }
 
   // Search all clickable elements by text
   const candidates = Array.from(document.querySelectorAll('button, a, [role="button"]'));
   for (const el of candidates) {
-    const text = el.textContent.trim().toLowerCase();
+    if (el.closest('#cpt-panel')) continue;
+    const text = (el.textContent || '').trim().toLowerCase();
     if (
-      text === 'resume assignment' ||
+      text === 'go to assignment' ||
       text === 'start assignment' ||
-      text === 'resume' ||
-      text === 'take quiz' ||
+      text === 'resume assignment' ||
+      text === 'take assignment' ||
       text === 'start quiz' ||
+      text === 'take quiz' ||
+      text === 'resume quiz' ||
+      text === 'resume' ||
       text === 'start' ||
       text === 'try again' ||
+      text === 'retake' ||
+      text === 'làm bài' ||
       text === 'bắt đầu làm bài' ||
       text === 'tiếp tục làm bài' ||
-      text === 'làm lại'
+      text === 'làm lại' ||
+      text === 'bắt đầu' ||
+      text === 'tiếp tục'
     ) {
       return el;
     }
@@ -890,9 +910,17 @@ function findQuizEnterButton() {
 
   // Partial text match
   for (const el of candidates) {
-    const text = el.textContent.trim().toLowerCase();
+    if (el.closest('#cpt-panel')) continue;
+    const text = (el.textContent || '').trim().toLowerCase();
     if (
-      (text.includes('resume') || text.includes('start assignment') || text.includes('take quiz')) &&
+      (text.includes('start assignment') ||
+        text.includes('resume assignment') ||
+        text.includes('go to assignment') ||
+        text.includes('take assignment') ||
+        text.includes('start quiz') ||
+        text.includes('take quiz') ||
+        text.includes('làm bài tập') ||
+        text.includes('bắt đầu làm bài')) &&
       !text.includes('next') &&
       !text.includes('prev') &&
       !text.includes('back')
@@ -901,6 +929,21 @@ function findQuizEnterButton() {
     }
   }
 
+  return null;
+}
+
+/**
+ * Poll DOM waiting for the quiz enter button to mount
+ * @param {number} [timeoutMs=8000]
+ * @returns {Promise<Element|null>}
+ */
+export async function waitForQuizEnterButton(timeoutMs = 8000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const btn = findQuizEnterButton();
+    if (btn) return btn;
+    await sleep(400);
+  }
   return null;
 }
 
@@ -1087,6 +1130,28 @@ export async function solveAndSubmitQuiz(outsideUrl = '') {
     }
 
     if (questions.length === 0) {
+      // Check if we are on an uninitialized /attempt page (blank white screen)
+      if (location.href.includes('/attempt')) {
+        showToast('⚠️ Phiên làm bài chưa được khởi tạo (trắng trang). Đang tự động sửa lỗi và nạp bài...', 'warning');
+        const meta = getMetadata();
+        const courseId = meta.course_id;
+        const itemId = meta.item_id || extractItemId();
+        if (courseId && itemId) {
+          const initiated = await apiInitiateAttempt(courseId, itemId);
+          if (initiated) {
+            showToast('✅ Đã kích hoạt phiên làm bài! Đang tải lại...', 'success');
+            await sleep(1500);
+            window.location.reload();
+            return;
+          }
+        }
+        // Fallback: return to overview page and enter properly
+        showToast('🔄 Đang quay lại trang bài tập để vào bài chuẩn...', 'info');
+        await sleep(1500);
+        window.location.href = location.href.replace(/\/attempt.*/, '');
+        return;
+      }
+
       showToast('Không tìm thấy câu hỏi trắc nghiệm nào trên trang này.', 'warning');
       return;
     }
@@ -1338,10 +1403,10 @@ export async function handleAutoQuiz() {
     }
 
     // User is OUTSIDE on the assignment overview page:
-    showToast('⚡ Bắt đầu tự động vào làm bài Quiz...', 'info');
+    showToast('⚡ Đang tìm nút vào làm bài...', 'info');
 
     const outsideUrl = location.href;
-    const enterBtn = findQuizEnterButton();
+    const enterBtn = await waitForQuizEnterButton(6000);
 
     // Save auto quiz state so when /attempt loads it automatically starts
     await chrome.storage.local.set({
@@ -1357,10 +1422,23 @@ export async function handleAutoQuiz() {
       safeClick(enterBtn);
       await autoClickStartModal();
     } else {
-      // Direct navigation to /attempt
-      showToast('Đang chuyển hướng vào trang làm bài...', 'info');
-      const cleanUrl = location.href.split('?')[0].replace(/\/$/, '');
-      window.location.href = `${cleanUrl}/attempt`;
+      // Button not found yet, try backend GraphQL initiate before navigating
+      const meta = getMetadata();
+      const courseId = meta.course_id;
+      const itemId = meta.item_id || extractItemId();
+      let initiated = false;
+      if (courseId && itemId) {
+        showToast('Đang khởi tạo phiên làm bài qua Coursera API...', 'info');
+        initiated = await apiInitiateAttempt(courseId, itemId);
+      }
+
+      if (initiated) {
+        showToast('Đang chuyển hướng vào trang làm bài...', 'info');
+        const cleanUrl = location.href.split('?')[0].replace(/\/$/, '');
+        window.location.href = `${cleanUrl}/attempt`;
+      } else {
+        showToast('⚠️ Vui lòng bấm nút "Bắt đầu làm bài" trên trang để AI tự giải!', 'warning');
+      }
     }
   } catch (error) {
     console.error('[CourseraPro] Auto Quiz entry error:', error);
