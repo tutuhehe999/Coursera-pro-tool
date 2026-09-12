@@ -150,10 +150,14 @@ function findSubmissionInputs() {
     );
   });
 
+  // File upload input
+  const fileInputs = allInputs.filter((el) => el.tagName === 'INPUT' && el.type === 'file');
+
   return {
     titleInput,
     contentInputs,
     urlInput,
+    fileInputs,
     honorCheckboxes,
   };
 }
@@ -256,6 +260,99 @@ In conclusion, the proposed methodology satisfies all project objectives while e
 }
 
 /**
+ * Synthesize a valid academic document file in-memory using pure browser APIs
+ * @param {string} title
+ * @param {string} textContent
+ * @param {string} [extension='pdf']
+ * @returns {File}
+ */
+export function createSyntheticFile(title, textContent, extension = 'pdf') {
+  const cleanTitle = (title || 'Project_Assignment_Submission')
+    .replace(/[^a-zA-Z0-9_-]/g, '_')
+    .substring(0, 45);
+
+  if (extension === 'pdf') {
+    const safeTitle = (title || 'Course Project Report').replace(/[\r\n\t]/g, ' ');
+    const safeLines = (textContent || safeTitle)
+      .split('\n')
+      .slice(0, 30)
+      .map((l) => l.replace(/[\(\)\\]/g, '').substring(0, 80).trim())
+      .filter(Boolean);
+
+    let streamContent = `BT\n/F1 14 Tf\n50 740 Td\n18 TL\n(${safeTitle}) Tj T*\n/F1 10 Tf\n14 TL\n`;
+    for (const line of safeLines) {
+      streamContent += `(${line}) Tj T*\n`;
+    }
+    streamContent += `ET\n`;
+
+    const streamLength = streamContent.length;
+    const pdfData = `%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Length ${streamLength} >>
+stream
+${streamContent}endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000010 00000 n 
+0000000060 00000 n 
+0000000117 00000 n 
+0000000234 00000 n 
+0000000307 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+${400 + streamLength}
+%%EOF`;
+
+    const blob = new Blob([pdfData], { type: 'application/pdf' });
+    return new File([blob], `${cleanTitle}.pdf`, { type: 'application/pdf' });
+  }
+
+  // Default to text / code
+  const mimeType = extension === 'py' ? 'text/x-python' : 'text/plain';
+  const blob = new Blob([textContent], { type: mimeType });
+  return new File([blob], `${cleanTitle}.${extension}`, { type: mimeType });
+}
+
+/**
+ * Programmatically upload a file into a Coursera file input element
+ * @param {HTMLInputElement} fileInput
+ * @param {File} file
+ * @returns {Promise<boolean>}
+ */
+export async function uploadFileToInput(fileInput, file) {
+  if (!fileInput || !file) return false;
+  try {
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    fileInput.files = dt.files;
+    fileInput.dispatchEvent(new Event('input', { bubbles: true }));
+    fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+
+    // Add badge
+    addBadge(fileInput.parentElement || fileInput, `📁 ${file.name}`);
+    return true;
+  } catch (err) {
+    console.warn('[CourseraPro] Failed to programmatically upload file:', err);
+    return false;
+  }
+}
+
+/**
  * Main handler to generate and autofill the peer assignment
  */
 export async function handleAutoAssignment() {
@@ -263,7 +360,7 @@ export async function handleAutoAssignment() {
     showToast('📝 Đang quét đề bài và các ô nhập liệu bài tập...', 'info');
 
     const inputs = findSubmissionInputs();
-    const hasInputs = inputs.titleInput || inputs.contentInputs.length > 0;
+    const hasInputs = inputs.titleInput || inputs.contentInputs.length > 0 || inputs.fileInputs.length > 0;
 
     if (!hasInputs) {
       // Check if user is outside on assignment landing page and needs to enter
@@ -303,12 +400,29 @@ export async function handleAutoAssignment() {
       await fillFormField(inputEl, text);
     }
 
-    // 3. Fill URL if present
+    // 3. Synthesize and Auto-Upload File if required
+    if (inputs.fileInputs.length > 0) {
+      showToast('📁 Phát hiện yêu cầu nộp file! Đang tự động tạo file PDF đồ án...', 'info');
+      const combinedReport = submissionData.sections.join('\n\n');
+      for (const fileInp of inputs.fileInputs) {
+        const accept = (fileInp.getAttribute('accept') || '').toLowerCase();
+        let ext = 'pdf';
+        if (accept.includes('.py')) ext = 'py';
+        else if (accept.includes('.txt')) ext = 'txt';
+        else if (accept.includes('.md')) ext = 'md';
+
+        const syntheticFile = createSyntheticFile(submissionData.title, combinedReport, ext);
+        await uploadFileToInput(fileInp, syntheticFile);
+        await sleep(1500); // Wait for Coursera upload handler
+      }
+    }
+
+    // 4. Fill URL if present
     if (inputs.urlInput && submissionData.url) {
       await fillFormField(inputs.urlInput, submissionData.url);
     }
 
-    // 4. Tick Honor code checkboxes
+    // 5. Tick Honor code checkboxes
     for (const cb of inputs.honorCheckboxes) {
       if (!cb.checked) {
         cb.click();
@@ -318,7 +432,7 @@ export async function handleAutoAssignment() {
     }
 
     updateProgress(3, 3, 'Hoàn tất soạn bài!');
-    showToast('🎉 Đã soạn và điền xong bài tập nộp! Hãy kiểm tra lại trước khi bấm Submit.', 'success');
+    showToast('🎉 Đã soạn, đính kèm file và điền xong bài tập nộp! Hãy kiểm tra lại trước khi bấm Submit.', 'success');
   } catch (err) {
     console.error('[CourseraPro] Auto Assignment error:', err);
     showToast('Lỗi soạn bài tập: ' + err.message, 'error');

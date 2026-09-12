@@ -10,6 +10,7 @@ import { handleDiscussionPrompt, toggleAutoDiscussions, checkAndResumeDiscussion
 import { handleReview, handlePeerGradedAssignment, checkAndResumeAutoReview } from '../modules/review.js';
 import { handleDisableAiGrading, handleGetShareableLink, handleRequestGrading } from '../modules/grading.js';
 import { handleAutoAssignment } from '../modules/assignment.js';
+import { startCourseAutopilot } from '../modules/autopilot.js';
 import { waitForSelector } from '../utils/dom.js';
 
 /**
@@ -123,6 +124,7 @@ function ensurePanel() {
 
   try {
     createPanel({
+      onAutopilot: () => startCourseAutopilot(),
       onBypass: () => resolveWeekMaterial(),
       onQuiz: () => handleAutoQuiz(),
       onAutoAssignment: () => handleAutoAssignment(),

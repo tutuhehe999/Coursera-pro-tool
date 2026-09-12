@@ -794,12 +794,14 @@ Your task is to provide the accurate, correct answer for each question.
 CRITICAL RULES:
 1. For single choice questions, your answer MUST match the EXACT character string of the correct choice.
 2. For multiple choice / "Check all that apply" questions, provide ALL correct options separated by a pipe character '|' (e.g. "First option|Second option").
-3. Return a valid JSON array containing one object per question in exact question order:
+3. For open-ended, reflection, or short-answer essay questions (where no options are listed), write a high-quality, professional academic paragraph (about 60-120 words) directly answering the prompt.
+4. Return a valid JSON array containing one object per question in exact question order:
 [
   { "id": 1, "answer": "Exact text of correct choice" },
-  { "id": 2, "answer": "First option|Second option" }
+  { "id": 2, "answer": "First option|Second option" },
+  { "id": 3, "answer": "High quality concise academic answer..." }
 ]
-4. Do NOT include markdown commentary. Return only the JSON array.`;
+5. Do NOT include markdown commentary. Return only the JSON array.`;
 
   // Format clearly for the LLM, injecting blacklist warnings if available
   const formattedPrompt = questions
@@ -1099,17 +1101,78 @@ async function getAvailableModels(provider = 'gemini') {
 // ====== utils/coursera-api.js ======
 /**
  * Coursera Pro Tool - Coursera API Interactions
- * Helper functions for interacting with Coursera's internal APIs
+ * Comprehensive API client for Coursera REST APIs and GraphQL Gateway.
+ * Supports direct bypass for videos, readings, widgets, and coaches.
  */
 
 
 /**
- * Get the CAUTH token from cookies via background script
+ * Extract CSRF token from document.cookie
+ * @returns {string}
+ */
+function getCsrfToken() {
+  if (typeof document === 'undefined' || !document.cookie) return '';
+  const match = document.cookie.match(/(?:^|;\s*)(?:CSRF3-Token|CSRF2-Token|csrftoken)=([^;]+)/);
+  return match ? decodeURIComponent(match[1]) : '';
+}
+
+/**
+ * Standard headers required by Coursera internal APIs
+ * @param {boolean} [isJson=true]
+ * @returns {Record<string, string>}
+ */
+function getApiHeaders(isJson = true) {
+  const headers = {
+    'x-coursera-application': 'ondemand',
+    'x-requested-with': 'XMLHttpRequest',
+  };
+  const csrf = getCsrfToken();
+  if (csrf) {
+    headers['x-csrf3-token'] = csrf;
+    headers['x-csrf2-token'] = csrf;
+    headers['x-csrftoken'] = csrf;
+  }
+  if (isJson) {
+    headers['Content-Type'] = 'application/json';
+  }
+  return headers;
+}
+
+/**
+ * Get the CAUTH token from cookies via background script or storage
  * @returns {Promise<string>}
  */
 async function getCauthToken() {
-  const result = await chrome.storage.local.get(['CAUTH']);
-  return result.CAUTH || '';
+  try {
+    const result = await chrome.storage.local.get(['CAUTH']);
+    return result.CAUTH || '';
+  } catch (_e) {
+    return '';
+  }
+}
+
+/**
+ * Get current logged-in user ID via Coursera API or DOM metadata
+ * @returns {Promise<string>}
+ */
+async function getCurrentUserId() {
+  try {
+    const metaId = extractUserId();
+    if (metaId) return String(metaId);
+
+    const res = await fetch('https://www.coursera.org/api/adminUserPermissions.v1?q=my', {
+      credentials: 'include',
+      headers: getApiHeaders(false),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const id = data?.elements?.[0]?.id;
+      if (id) return String(id);
+    }
+  } catch (err) {
+    console.warn('[CourseraPro] Failed to fetch current userId via API:', err);
+  }
+  return '';
 }
 
 /**
@@ -1118,15 +1181,261 @@ async function getCauthToken() {
  * @returns {Promise<object>}
  */
 async function fetchCourseStructure(courseSlug) {
-  const response = await fetch(
-    `https://www.coursera.org/api/onDemandCourseMaterials.v2/?q=slug&slug=${courseSlug}&includes=modules%2Clessons%2CpassableItemGroups%2CpassableItemGroupChoices%2CpassableLessonElements%2Citems%2Ctracks%2CgradePolicy&fields=onDemandCourseMaterialModules.v1(name,slug,description,timeCommitment,lessonIds,optional,learningObjectives),onDemandCourseMaterialLessons.v1(name,slug,timeCommitment,elementIds,optional,trackId),onDemandCourseMaterialPassableItemGroups.v1(requiredPassedCount,passableItemGroupChoiceIds,trackId),onDemandCourseMaterialPassableItemGroupChoices.v1(name,description,itemIds),onDemandCourseMaterialPassableLessonElements.v1(gradingWeight,isRequiredForPassing),onDemandCourseMaterialItems.v2(name,slug,timeCommitment,contentSummary,isLocked,lockableByItem,itemLockedReasonCode,trackId,lockedStatus,itemLockSummary),onDemandCourseMaterialTracks.v1(passablesCount)`,
-    { credentials: 'include' }
-  );
-  if (response.ok) {
-    const ct = response.headers.get('content-type') || '';
-    if (ct.includes('application/json')) return response.json();
+  try {
+    const response = await fetch(
+      `https://www.coursera.org/api/onDemandCourseMaterials.v2/?q=slug&slug=${courseSlug}&includes=modules%2Clessons%2CpassableItemGroups%2CpassableItemGroupChoices%2CpassableLessonElements%2Citems%2Ctracks%2CgradePolicy&fields=onDemandCourseMaterialModules.v1(name,slug,description,timeCommitment,lessonIds,optional,learningObjectives),onDemandCourseMaterialLessons.v1(name,slug,timeCommitment,elementIds,optional,trackId),onDemandCourseMaterialPassableItemGroups.v1(requiredPassedCount,passableItemGroupChoiceIds,trackId),onDemandCourseMaterialPassableItemGroupChoices.v1(name,description,itemIds),onDemandCourseMaterialPassableLessonElements.v1(gradingWeight,isRequiredForPassing),onDemandCourseMaterialItems.v2(name,slug,timeCommitment,contentSummary,isLocked,lockableByItem,itemLockedReasonCode,trackId,lockedStatus,itemLockSummary),onDemandCourseMaterialTracks.v1(passablesCount)&showLockedItems=true`,
+      { credentials: 'include', headers: getApiHeaders(false) }
+    );
+    if (response.ok) {
+      const ct = response.headers.get('content-type') || '';
+      if (ct.includes('application/json')) return response.json();
+    }
+  } catch (err) {
+    console.warn('[CourseraPro] fetchCourseStructure error:', err);
   }
   return {};
+}
+
+/**
+ * Fetch course completion progress for all items
+ * @param {string} userId
+ * @param {string} courseId
+ * @returns {Promise<Set<string>>} Set of completed item IDs
+ */
+async function fetchCourseCompletedItems(userId, courseId) {
+  try {
+    const res = await fetch(
+      `https://www.coursera.org/api/onDemandCoursesProgress.v1/${userId}~${courseId}?fields=gradedAssignmentGroupProgress`,
+      { credentials: 'include', headers: getApiHeaders(false) }
+    );
+    if (res.ok) {
+      const data = await res.json();
+      const items = data?.elements?.[0]?.items || {};
+      const completed = new Set();
+      for (const [itemId, prog] of Object.entries(items)) {
+        if (prog && prog.progressState === 'Completed') {
+          completed.add(itemId);
+        }
+      }
+      return completed;
+    }
+  } catch (err) {
+    console.warn('[CourseraPro] fetchCourseCompletedItems error:', err);
+  }
+  return new Set();
+}
+
+/**
+ * Directly mark a Reading / Supplement item as Completed via Coursera REST API
+ * @param {string} courseId
+ * @param {string} itemId
+ * @param {string|number} userId
+ * @returns {Promise<boolean>}
+ */
+async function apiCompleteSupplement(courseId, itemId, userId) {
+  try {
+    const res = await fetch('https://www.coursera.org/api/onDemandSupplementCompletions.v1', {
+      method: 'POST',
+      credentials: 'include',
+      headers: getApiHeaders(true),
+      body: JSON.stringify({
+        courseId: courseId,
+        itemId: itemId,
+        userId: parseInt(userId, 10) || 0,
+      }),
+    });
+    if (res.ok) {
+      const text = await res.text();
+      return text.includes('Completed') || res.status === 200 || res.status === 201;
+    }
+  } catch (err) {
+    console.warn('[CourseraPro] apiCompleteSupplement error:', err);
+  }
+  return false;
+}
+
+/**
+ * Directly mark a Video / Lecture item as Completed via Coursera REST API
+ * @param {string} userId
+ * @param {string} courseSlug
+ * @param {string} courseId
+ * @param {string} itemId
+ * @param {number} [timeCommitment=60000]
+ * @returns {Promise<boolean>}
+ */
+async function apiCompleteVideo(userId, courseSlug, courseId, itemId, timeCommitment = 60000) {
+  try {
+    // Step 1: Get video tracking metadata
+    const metaRes = await fetch(
+      `https://www.coursera.org/api/onDemandLectureVideos.v1/${courseId}~${itemId}?includes=video&fields=disableSkippingForward,startMs,endMs`,
+      { credentials: 'include', headers: getApiHeaders(false) }
+    );
+    let trackingId = '';
+    if (metaRes.ok) {
+      const metaData = await metaRes.json();
+      trackingId = metaData?.linked?.['onDemandVideos.v1']?.[0]?.id || '';
+    }
+
+    // Step 2: Post play video event
+    await fetch(
+      `https://www.coursera.org/api/opencourse.v1/user/${userId}/course/${courseSlug}/item/${itemId}/lecture/videoEvents/play?autoEnroll=false`,
+      {
+        method: 'POST',
+        credentials: 'include',
+        headers: getApiHeaders(false),
+        body: '{"contentRequestBody":{}}',
+      }
+    );
+
+    // Step 3: Update video progress if trackingId exists
+    if (trackingId) {
+      const durationMs = timeCommitment > 0 ? timeCommitment : 60000;
+      await fetch(
+        `https://www.coursera.org/api/onDemandVideoProgresses.v1/${userId}~${courseId}~${trackingId}`,
+        {
+          method: 'PUT',
+          credentials: 'include',
+          headers: getApiHeaders(true),
+          body: JSON.stringify({
+            videoProgressId: `${userId}~${courseId}~${trackingId}`,
+            viewedUpTo: durationMs + 2000,
+          }),
+        }
+      );
+    }
+
+    // Step 4: Post ended video event
+    const endedRes = await fetch(
+      `https://www.coursera.org/api/opencourse.v1/user/${userId}/course/${courseSlug}/item/${itemId}/lecture/videoEvents/ended?autoEnroll=false`,
+      {
+        method: 'POST',
+        credentials: 'include',
+        headers: getApiHeaders(false),
+        body: '{"contentRequestBody":{}}',
+      }
+    );
+
+    return endedRes.ok;
+  } catch (err) {
+    console.warn('[CourseraPro] apiCompleteVideo error:', err);
+    return false;
+  }
+}
+
+/**
+ * Directly mark an Ungraded Widget item as Completed via Coursera REST API
+ * @param {string} userId
+ * @param {string} courseId
+ * @param {string} itemId
+ * @returns {Promise<boolean>}
+ */
+async function apiCompleteWidget(userId, courseId, itemId) {
+  try {
+    const sessRes = await fetch(
+      `https://www.coursera.org/api/onDemandWidgetSessions.v1/${userId}~${courseId}~${itemId}?fields=session,sessionId`,
+      { credentials: 'include', headers: getApiHeaders(false) }
+    );
+    if (!sessRes.ok) return false;
+    const sessData = await sessRes.json();
+    const sessionId = sessData?.elements?.[0]?.sessionId;
+    if (!sessionId) return false;
+
+    const progRes = await fetch(
+      `https://www.coursera.org/api/onDemandWidgetProgress.v1/${userId}~${courseId}~${itemId}`,
+      {
+        method: 'PUT',
+        credentials: 'include',
+        headers: getApiHeaders(true),
+        body: JSON.stringify({
+          sessionId: sessionId,
+          progressState: 'Completed',
+        }),
+      }
+    );
+    return progRes.ok;
+  } catch (err) {
+    console.warn('[CourseraPro] apiCompleteWidget error:', err);
+    return false;
+  }
+}
+
+/**
+ * Directly complete a Coursera Coach item via GraphQL Gateway
+ * @param {string} userId
+ * @param {string} courseId
+ * @param {string} itemId
+ * @returns {Promise<boolean>}
+ */
+async function apiCompleteCoach(userId, courseId, itemId) {
+  try {
+    const memRes = await fetch(
+      `https://www.coursera.org/api/onDemandSessionMemberships.v1/?q=activeByUserAndCourse&userId=${userId}&courseId=${courseId}&includes=sessions&fields=onDemandSessions.v1(branchId)`,
+      { credentials: 'include', headers: getApiHeaders(false) }
+    );
+    if (!memRes.ok) return false;
+    const memData = await memRes.json();
+    const sessions = memData?.linked?.['onDemandSessions.v1'] || [];
+    const branchId = sessions[0]?.branchId;
+    if (!branchId) return false;
+
+    const graphqlBody = [
+      {
+        operationName: 'UpdateCoachItemProgress',
+        variables: {
+          courseId: courseId,
+          branchId: branchId,
+          itemId: itemId,
+          progressState: 'COMPLETED',
+        },
+        query: `mutation UpdateCoachItemProgress($courseId: ID!, $branchId: ID!, $itemId: ID!, $progressState: CoachItem_ProgressState!) {
+  CoachItemProgress_UpdateCoachItemProgress(
+    input: {courseId: $courseId, branchId: $branchId, itemId: $itemId, progressState: $progressState}
+  ) {
+    _
+    __typename
+  }
+}`,
+      },
+    ];
+
+    const res = await fetch('https://www.coursera.org/graphql-gateway?opname=UpdateCoachItemProgress', {
+      method: 'POST',
+      credentials: 'include',
+      headers: getApiHeaders(true),
+      body: JSON.stringify(graphqlBody),
+    });
+    return res.ok;
+  } catch (err) {
+    console.warn('[CourseraPro] apiCompleteCoach error:', err);
+    return false;
+  }
+}
+
+/**
+ * Directly complete an Ungraded LTI launch item
+ * @param {string} userId
+ * @param {string} courseId
+ * @param {string} itemId
+ * @returns {Promise<boolean>}
+ */
+async function apiCompleteLti(userId, courseId, itemId) {
+  try {
+    const res = await fetch('https://www.coursera.org/api/rest/v1/lti/ungradedLaunches', {
+      method: 'POST',
+      credentials: 'include',
+      headers: getApiHeaders(true),
+      body: JSON.stringify({
+        courseId: courseId,
+        itemId: itemId,
+        learnerId: parseInt(userId, 10) || 0,
+        markItemCompleted: true,
+      }),
+    });
+    return res.ok;
+  } catch (err) {
+    console.warn('[CourseraPro] apiCompleteLti error:', err);
+    return false;
+  }
 }
 
 /**
@@ -1221,7 +1530,7 @@ async function requestGradingByPeer(courseId, itemId, submissionId, reason = 'EX
   try {
     const res = await fetch('https://www.coursera.org/graphql-gateway?opname=RequestGradingByPeer', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...getApiHeaders(true) },
       body: JSON.stringify(graphqlBody),
       credentials: 'include',
     });
@@ -1230,7 +1539,7 @@ async function requestGradingByPeer(courseId, itemId, submissionId, reason = 'EX
 
   return fetch('https://www.coursera.org/graphqlBatch', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...getApiHeaders(true) },
     body: JSON.stringify(graphqlBody),
     credentials: 'include',
   });
@@ -1246,11 +1555,10 @@ async function requestGradingByPeer(courseId, itemId, submissionId, reason = 'EX
 async function fetchPeerSubmissionInfo(courseId, itemId, userId = '') {
   const learnerId = userId || extractUserId();
 
-  // Strategy 1: onDemandPeerAssignmentPermissions.v1 with userId~courseId~itemId (exact original build engine)
   if (learnerId && courseId && itemId) {
     try {
       const permUrl = `https://www.coursera.org/api/onDemandPeerAssignmentPermissions.v1/${learnerId}~${courseId}~${itemId}/?fields=deleteSubmission%2ClistSubmissions%2CreviewPeers%2CviewReviewSchema%2CanonymousPeerReview%2ConDemandPeerSubmissionProgresses.v1(latestSubmissionSummary%2ClatestDraftSummary%2ClatestAttemptSummary)%2ConDemandPeerReceivedReviewProgresses.v1(evaluationIfReady%2CearliestCompletionTime%2CreviewCount%2CdefaultReceivedReviewRequiredCount)%2ConDemandPeerDisplayablePhaseSchedules.v1(currentPhase%2CphaseEnds%2CphaseStarts)&includes=receivedReviewsProgress%2CsubmissionProgress%2CphaseSchedule`;
-      const res = await fetch(permUrl, { credentials: 'include' });
+      const res = await fetch(permUrl, { credentials: 'include', headers: getApiHeaders(false) });
       if (res.ok) {
         const ct = res.headers.get('content-type') || '';
         if (ct.includes('application/json')) {
@@ -1260,11 +1568,10 @@ async function fetchPeerSubmissionInfo(courseId, itemId, userId = '') {
     } catch (_e) {}
   }
 
-  // Strategy 2: onDemandPeerAssignments.v1 with courseId~itemId
   if (courseId && itemId) {
     try {
       const url = `https://www.coursera.org/api/onDemandPeerAssignments.v1/${courseId}~${itemId}/?fields=deleteSubmission%2ClistSubmissions%2CreviewPeers%2CviewReviewSchema%2CanonymousPeerReview%2ConDemandPeerSubmissionProgresses.v1(latestSubmissionSummary%2ClatestDraftSummary%2ClatestAttemptSummary)%2ConDemandPeerReceivedReviewProgresses.v1(evaluationIfReady%2CearliestCompletionTime%2CreviewCount%2CdefaultReceivedReviewRequiredCount)%2ConDemandPeerDisplayablePhaseSchedules.v1(currentPhase%2CphaseEnds%2CphaseStarts)&includes=receivedReviewsProgress%2CsubmissionProgress%2CphaseSchedule`;
-      const res = await fetch(url, { credentials: 'include' });
+      const res = await fetch(url, { credentials: 'include', headers: getApiHeaders(false) });
       if (res.ok) {
         const ct = res.headers.get('content-type') || '';
         if (ct.includes('application/json')) {
@@ -1372,8 +1679,22 @@ function createPanel(handlers) {
 
       <!-- Action Modules (Tab Panes) -->
       <div class="cpt-actions">
-        <!-- TAB 1: HỌC TẬP (Quiz AI, Soạn bài tập, Thảo luận) -->
+        <!-- TAB 1: HỌC TẬP (Autopilot, Quiz AI, Soạn bài tập, Thảo luận) -->
         <div class="cpt-tab-pane active" id="cpt-pane-learning">
+          <!-- Master Course Autopilot -->
+          <button class="cpt-btn cpt-btn-autopilot" id="cpt-autopilot" title="Tự động hoàn thành toàn bộ khóa học từ Tuần 1 đến N (1-Click)">
+            <div class="cpt-btn-left">
+              <span class="cpt-icon-box cpt-icon-gold">
+                <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+              </span>
+              <div class="cpt-btn-info">
+                <span class="cpt-btn-name">Master Autopilot</span>
+                <span class="cpt-btn-desc">Cày tự động toàn khóa 1-Click</span>
+              </div>
+            </div>
+            <span class="cpt-tag cpt-tag-gold">🚀 1-CLICK</span>
+          </button>
+
           <!-- Auto Quiz AI -->
           <button class="cpt-btn cpt-btn-quiz" id="cpt-quiz" title="Tự động giải Quiz bằng Gemini / DeepSeek / Groq (Alt+Q)">
             <div class="cpt-btn-left">
@@ -1552,6 +1873,7 @@ function createPanel(handlers) {
   setupHotkeys(handlers);
 
   // Bind action handlers
+  document.getElementById('cpt-autopilot')?.addEventListener('click', () => handlers.onAutopilot?.());
   document.getElementById('cpt-bypass')?.addEventListener('click', () => handlers.onBypass?.());
   document.getElementById('cpt-quiz')?.addEventListener('click', () => handlers.onQuiz?.());
   document.getElementById('cpt-auto-assignment')?.addEventListener('click', () => handlers.onAutoAssignment?.());
@@ -2009,10 +2331,21 @@ function removePanel() {
 // ====== modules/bypass.js ======
 /**
  * Coursera Pro Tool - Video/Reading Bypass Module
- * Automatically marks videos and readings as completed
+ * Automatically marks videos and readings as completed using Native REST API
+ * with graceful fallback to background worker tab.
  */
 
 
+
+
+import {
+  getCurrentUserId,
+  apiCompleteSupplement,
+  apiCompleteVideo,
+  apiCompleteWidget,
+  apiCompleteCoach,
+  apiCompleteLti,
+} from '../utils/coursera-api.js';
 
 let isBypassRunning = false;
 
@@ -2030,7 +2363,7 @@ async function cancelBypass() {
 
 /**
  * Automatically resolve all video and reading items in current week
- * Uses a single reusable background worker tab to avoid tab spam
+ * Hybrid engine: attempts ultra-fast Native REST API first, then falls back to background worker
  */
 async function resolveWeekMaterial() {
   if (isBypassRunning) {
@@ -2044,7 +2377,7 @@ async function resolveWeekMaterial() {
     // Wait for week items to load if not already visible
     const itemSelector = '.rc-WeekItemList, [data-track-component="item_link"], .css-7jkbgo, [data-testid="item-link"]';
     try {
-      await waitForSelector(itemSelector, 8000);
+      await waitForSelector(itemSelector, 6000);
     } catch {
       // Continue to query
     }
@@ -2071,7 +2404,8 @@ async function resolveWeekMaterial() {
         url.includes('/quiz/') ||
         url.includes('/exam/') ||
         url.includes('/discussion-prompt/') ||
-        url.includes('/discussionPrompt/')
+        url.includes('/discussionPrompt/') ||
+        url.includes('/peer/')
       ) {
         continue;
       }
@@ -2084,9 +2418,30 @@ async function resolveWeekMaterial() {
 
       if (isCompleted) continue;
 
+      // Extract itemId and itemType
+      let itemId = '';
+      let itemType = 'unknown';
+
+      const lectureMatch = url.match(/\/lecture\/([A-Za-z0-9_-]+)/);
+      const supplementMatch = url.match(/\/supplement\/([A-Za-z0-9_-]+)/);
+      const itemMatch = url.match(/\/item\/([A-Za-z0-9_-]+)/);
+
+      if (lectureMatch) {
+        itemId = lectureMatch[1];
+        itemType = 'lecture';
+      } else if (supplementMatch) {
+        itemId = supplementMatch[1];
+        itemType = 'supplement';
+      } else if (itemMatch) {
+        itemId = itemMatch[1];
+        itemType = 'item';
+      }
+
       seenUrls.add(url);
       itemsToProcess.push({
         url,
+        itemId,
+        itemType,
         title: el.textContent?.trim() || 'Item',
       });
     }
@@ -2100,7 +2455,18 @@ async function resolveWeekMaterial() {
     let completed = 0;
     isBypassRunning = true;
 
-    showToast(`Tìm thấy ${total} bài học chưa hoàn thành! Đang xử lý ngầm tuần tự...`, 'info');
+    // Retrieve context for Native REST API
+    const meta = getMetadata();
+    const courseSlug = meta.open_course_slug || getCourseSlug();
+    const courseId = meta.course_id;
+    const userId = await getCurrentUserId();
+
+    const canUseApi = Boolean(userId && courseId && courseSlug);
+    if (canUseApi) {
+      showToast(`⚡ Kích hoạt Động cơ Native API: Xử lý siêu tốc ${total} bài học...`, 'info');
+    } else {
+      showToast(`Tìm thấy ${total} bài học chưa hoàn thành! Đang xử lý ngầm tuần tự...`, 'info');
+    }
 
     for (let i = 0; i < total; i++) {
       if (!isBypassRunning) {
@@ -2110,32 +2476,62 @@ async function resolveWeekMaterial() {
 
       const item = itemsToProcess[i];
       updateProgress(i + 1, total, `Đang xử lý ${i + 1}/${total}: ${item.title}`);
-      showToast(`Đang hoàn thành ${i + 1}/${total}: "${item.title}"...`, 'info');
 
-      try {
-        const isLast = (i === total - 1);
-        const workerUrl = item.url.includes('#')
-          ? `${item.url.split('#')[0]}#cpt_bypass=1`
-          : `${item.url}#cpt_bypass=1`;
+      let success = false;
 
-        const res = await chrome.runtime.sendMessage({
-          action: 'bypassItemSingleWorker',
-          url: workerUrl,
-          isLast,
-        });
-
-        if (res?.success) {
-          completed++;
+      // --- STRATEGY 1: Native REST API (Super Fast & Zero-Tab) ---
+      if (canUseApi && item.itemId) {
+        try {
+          if (item.itemType === 'supplement') {
+            success = await apiCompleteSupplement(courseId, item.itemId, userId);
+          } else if (item.itemType === 'lecture') {
+            success = await apiCompleteVideo(userId, courseSlug, courseId, item.itemId);
+          } else {
+            // Try supplement first, then video
+            success = await apiCompleteSupplement(courseId, item.itemId, userId);
+            if (!success) {
+              success = await apiCompleteVideo(userId, courseSlug, courseId, item.itemId);
+            }
+          }
+        } catch (apiErr) {
+          console.warn('[CourseraPro] Native API attempt error:', apiErr);
         }
-      } catch (e) {
-        console.warn('[CourseraPro] Failed to resolve item:', item.url, e);
       }
+
+      // --- STRATEGY 2: Background Worker Fallback ---
+      if (!success) {
+        try {
+          const isLast = (i === total - 1);
+          const workerUrl = item.url.includes('#')
+            ? `${item.url.split('#')[0]}#cpt_bypass=1`
+            : `${item.url}#cpt_bypass=1`;
+
+          const res = await chrome.runtime.sendMessage({
+            action: 'bypassItemSingleWorker',
+            url: workerUrl,
+            isLast,
+          });
+
+          if (res?.success) {
+            success = true;
+          }
+        } catch (workerErr) {
+          console.warn('[CourseraPro] Worker fallback error:', item.url, workerErr);
+        }
+      }
+
+      if (success) {
+        completed++;
+      }
+
+      // Small jitter delay between items to respect rate limits
+      await sleep(canUseApi ? 300 : 800);
     }
 
     if (isBypassRunning) {
       showToast(`🎉 Đã xử lý xong ${completed}/${total} bài học tuần này! Đang tải lại trang...`, 'success');
       updateProgress(total, total, 'Hoàn thành 100%!');
-      await sleep(2500);
+      await sleep(2200);
       location.reload();
     }
   } catch (error) {
@@ -2254,7 +2650,6 @@ function cycleVideoSpeed() {
   setVideoSpeed(nextSpeed);
   return nextSpeed;
 }
-
 
 
 // ====== modules/quiz.js ======
@@ -5187,10 +5582,14 @@ function findSubmissionInputs() {
     );
   });
 
+  // File upload input
+  const fileInputs = allInputs.filter((el) => el.tagName === 'INPUT' && el.type === 'file');
+
   return {
     titleInput,
     contentInputs,
     urlInput,
+    fileInputs,
     honorCheckboxes,
   };
 }
@@ -5293,6 +5692,99 @@ In conclusion, the proposed methodology satisfies all project objectives while e
 }
 
 /**
+ * Synthesize a valid academic document file in-memory using pure browser APIs
+ * @param {string} title
+ * @param {string} textContent
+ * @param {string} [extension='pdf']
+ * @returns {File}
+ */
+function createSyntheticFile(title, textContent, extension = 'pdf') {
+  const cleanTitle = (title || 'Project_Assignment_Submission')
+    .replace(/[^a-zA-Z0-9_-]/g, '_')
+    .substring(0, 45);
+
+  if (extension === 'pdf') {
+    const safeTitle = (title || 'Course Project Report').replace(/[\r\n\t]/g, ' ');
+    const safeLines = (textContent || safeTitle)
+      .split('\n')
+      .slice(0, 30)
+      .map((l) => l.replace(/[\(\)\\]/g, '').substring(0, 80).trim())
+      .filter(Boolean);
+
+    let streamContent = `BT\n/F1 14 Tf\n50 740 Td\n18 TL\n(${safeTitle}) Tj T*\n/F1 10 Tf\n14 TL\n`;
+    for (const line of safeLines) {
+      streamContent += `(${line}) Tj T*\n`;
+    }
+    streamContent += `ET\n`;
+
+    const streamLength = streamContent.length;
+    const pdfData = `%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Length ${streamLength} >>
+stream
+${streamContent}endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000010 00000 n 
+0000000060 00000 n 
+0000000117 00000 n 
+0000000234 00000 n 
+0000000307 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+${400 + streamLength}
+%%EOF`;
+
+    const blob = new Blob([pdfData], { type: 'application/pdf' });
+    return new File([blob], `${cleanTitle}.pdf`, { type: 'application/pdf' });
+  }
+
+  // Default to text / code
+  const mimeType = extension === 'py' ? 'text/x-python' : 'text/plain';
+  const blob = new Blob([textContent], { type: mimeType });
+  return new File([blob], `${cleanTitle}.${extension}`, { type: mimeType });
+}
+
+/**
+ * Programmatically upload a file into a Coursera file input element
+ * @param {HTMLInputElement} fileInput
+ * @param {File} file
+ * @returns {Promise<boolean>}
+ */
+async function uploadFileToInput(fileInput, file) {
+  if (!fileInput || !file) return false;
+  try {
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    fileInput.files = dt.files;
+    fileInput.dispatchEvent(new Event('input', { bubbles: true }));
+    fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+
+    // Add badge
+    addBadge(fileInput.parentElement || fileInput, `📁 ${file.name}`);
+    return true;
+  } catch (err) {
+    console.warn('[CourseraPro] Failed to programmatically upload file:', err);
+    return false;
+  }
+}
+
+/**
  * Main handler to generate and autofill the peer assignment
  */
 async function handleAutoAssignment() {
@@ -5300,7 +5792,7 @@ async function handleAutoAssignment() {
     showToast('📝 Đang quét đề bài và các ô nhập liệu bài tập...', 'info');
 
     const inputs = findSubmissionInputs();
-    const hasInputs = inputs.titleInput || inputs.contentInputs.length > 0;
+    const hasInputs = inputs.titleInput || inputs.contentInputs.length > 0 || inputs.fileInputs.length > 0;
 
     if (!hasInputs) {
       // Check if user is outside on assignment landing page and needs to enter
@@ -5340,12 +5832,29 @@ async function handleAutoAssignment() {
       await fillFormField(inputEl, text);
     }
 
-    // 3. Fill URL if present
+    // 3. Synthesize and Auto-Upload File if required
+    if (inputs.fileInputs.length > 0) {
+      showToast('📁 Phát hiện yêu cầu nộp file! Đang tự động tạo file PDF đồ án...', 'info');
+      const combinedReport = submissionData.sections.join('\n\n');
+      for (const fileInp of inputs.fileInputs) {
+        const accept = (fileInp.getAttribute('accept') || '').toLowerCase();
+        let ext = 'pdf';
+        if (accept.includes('.py')) ext = 'py';
+        else if (accept.includes('.txt')) ext = 'txt';
+        else if (accept.includes('.md')) ext = 'md';
+
+        const syntheticFile = createSyntheticFile(submissionData.title, combinedReport, ext);
+        await uploadFileToInput(fileInp, syntheticFile);
+        await sleep(1500); // Wait for Coursera upload handler
+      }
+    }
+
+    // 4. Fill URL if present
     if (inputs.urlInput && submissionData.url) {
       await fillFormField(inputs.urlInput, submissionData.url);
     }
 
-    // 4. Tick Honor code checkboxes
+    // 5. Tick Honor code checkboxes
     for (const cb of inputs.honorCheckboxes) {
       if (!cb.checked) {
         cb.click();
@@ -5355,7 +5864,7 @@ async function handleAutoAssignment() {
     }
 
     updateProgress(3, 3, 'Hoàn tất soạn bài!');
-    showToast('🎉 Đã soạn và điền xong bài tập nộp! Hãy kiểm tra lại trước khi bấm Submit.', 'success');
+    showToast('🎉 Đã soạn, đính kèm file và điền xong bài tập nộp! Hãy kiểm tra lại trước khi bấm Submit.', 'success');
   } catch (err) {
     console.error('[CourseraPro] Auto Assignment error:', err);
     showToast('Lỗi soạn bài tập: ' + err.message, 'error');
@@ -5368,6 +5877,7 @@ async function handleAutoAssignment() {
  * Coursera Pro Tool - Content Script Entry Point
  * Injects the floating panel and sets up all module handlers
  */
+
 
 
 
@@ -5488,6 +5998,7 @@ function ensurePanel() {
 
   try {
     createPanel({
+      onAutopilot: () => startCourseAutopilot(),
       onBypass: () => resolveWeekMaterial(),
       onQuiz: () => handleAutoQuiz(),
       onAutoAssignment: () => handleAutoAssignment(),

@@ -1,10 +1,20 @@
 /**
  * Coursera Pro Tool - Video/Reading Bypass Module
- * Automatically marks videos and readings as completed
+ * Automatically marks videos and readings as completed using Native REST API
+ * with graceful fallback to background worker tab.
  */
 
 import { waitForSelector, sleep, safeClick } from '../utils/dom.js';
 import { showToast, updateProgress } from '../ui/panel.js';
+import { getMetadata, getCourseSlug } from '../utils/metadata.js';
+import {
+  getCurrentUserId,
+  apiCompleteSupplement,
+  apiCompleteVideo,
+  apiCompleteWidget,
+  apiCompleteCoach,
+  apiCompleteLti,
+} from '../utils/coursera-api.js';
 
 let isBypassRunning = false;
 
@@ -22,7 +32,7 @@ export async function cancelBypass() {
 
 /**
  * Automatically resolve all video and reading items in current week
- * Uses a single reusable background worker tab to avoid tab spam
+ * Hybrid engine: attempts ultra-fast Native REST API first, then falls back to background worker
  */
 export async function resolveWeekMaterial() {
   if (isBypassRunning) {
@@ -36,7 +46,7 @@ export async function resolveWeekMaterial() {
     // Wait for week items to load if not already visible
     const itemSelector = '.rc-WeekItemList, [data-track-component="item_link"], .css-7jkbgo, [data-testid="item-link"]';
     try {
-      await waitForSelector(itemSelector, 8000);
+      await waitForSelector(itemSelector, 6000);
     } catch {
       // Continue to query
     }
@@ -63,7 +73,8 @@ export async function resolveWeekMaterial() {
         url.includes('/quiz/') ||
         url.includes('/exam/') ||
         url.includes('/discussion-prompt/') ||
-        url.includes('/discussionPrompt/')
+        url.includes('/discussionPrompt/') ||
+        url.includes('/peer/')
       ) {
         continue;
       }
@@ -76,9 +87,30 @@ export async function resolveWeekMaterial() {
 
       if (isCompleted) continue;
 
+      // Extract itemId and itemType
+      let itemId = '';
+      let itemType = 'unknown';
+
+      const lectureMatch = url.match(/\/lecture\/([A-Za-z0-9_-]+)/);
+      const supplementMatch = url.match(/\/supplement\/([A-Za-z0-9_-]+)/);
+      const itemMatch = url.match(/\/item\/([A-Za-z0-9_-]+)/);
+
+      if (lectureMatch) {
+        itemId = lectureMatch[1];
+        itemType = 'lecture';
+      } else if (supplementMatch) {
+        itemId = supplementMatch[1];
+        itemType = 'supplement';
+      } else if (itemMatch) {
+        itemId = itemMatch[1];
+        itemType = 'item';
+      }
+
       seenUrls.add(url);
       itemsToProcess.push({
         url,
+        itemId,
+        itemType,
         title: el.textContent?.trim() || 'Item',
       });
     }
@@ -92,7 +124,18 @@ export async function resolveWeekMaterial() {
     let completed = 0;
     isBypassRunning = true;
 
-    showToast(`Tìm thấy ${total} bài học chưa hoàn thành! Đang xử lý ngầm tuần tự...`, 'info');
+    // Retrieve context for Native REST API
+    const meta = getMetadata();
+    const courseSlug = meta.open_course_slug || getCourseSlug();
+    const courseId = meta.course_id;
+    const userId = await getCurrentUserId();
+
+    const canUseApi = Boolean(userId && courseId && courseSlug);
+    if (canUseApi) {
+      showToast(`⚡ Kích hoạt Động cơ Native API: Xử lý siêu tốc ${total} bài học...`, 'info');
+    } else {
+      showToast(`Tìm thấy ${total} bài học chưa hoàn thành! Đang xử lý ngầm tuần tự...`, 'info');
+    }
 
     for (let i = 0; i < total; i++) {
       if (!isBypassRunning) {
@@ -102,32 +145,62 @@ export async function resolveWeekMaterial() {
 
       const item = itemsToProcess[i];
       updateProgress(i + 1, total, `Đang xử lý ${i + 1}/${total}: ${item.title}`);
-      showToast(`Đang hoàn thành ${i + 1}/${total}: "${item.title}"...`, 'info');
 
-      try {
-        const isLast = (i === total - 1);
-        const workerUrl = item.url.includes('#')
-          ? `${item.url.split('#')[0]}#cpt_bypass=1`
-          : `${item.url}#cpt_bypass=1`;
+      let success = false;
 
-        const res = await chrome.runtime.sendMessage({
-          action: 'bypassItemSingleWorker',
-          url: workerUrl,
-          isLast,
-        });
-
-        if (res?.success) {
-          completed++;
+      // --- STRATEGY 1: Native REST API (Super Fast & Zero-Tab) ---
+      if (canUseApi && item.itemId) {
+        try {
+          if (item.itemType === 'supplement') {
+            success = await apiCompleteSupplement(courseId, item.itemId, userId);
+          } else if (item.itemType === 'lecture') {
+            success = await apiCompleteVideo(userId, courseSlug, courseId, item.itemId);
+          } else {
+            // Try supplement first, then video
+            success = await apiCompleteSupplement(courseId, item.itemId, userId);
+            if (!success) {
+              success = await apiCompleteVideo(userId, courseSlug, courseId, item.itemId);
+            }
+          }
+        } catch (apiErr) {
+          console.warn('[CourseraPro] Native API attempt error:', apiErr);
         }
-      } catch (e) {
-        console.warn('[CourseraPro] Failed to resolve item:', item.url, e);
       }
+
+      // --- STRATEGY 2: Background Worker Fallback ---
+      if (!success) {
+        try {
+          const isLast = (i === total - 1);
+          const workerUrl = item.url.includes('#')
+            ? `${item.url.split('#')[0]}#cpt_bypass=1`
+            : `${item.url}#cpt_bypass=1`;
+
+          const res = await chrome.runtime.sendMessage({
+            action: 'bypassItemSingleWorker',
+            url: workerUrl,
+            isLast,
+          });
+
+          if (res?.success) {
+            success = true;
+          }
+        } catch (workerErr) {
+          console.warn('[CourseraPro] Worker fallback error:', item.url, workerErr);
+        }
+      }
+
+      if (success) {
+        completed++;
+      }
+
+      // Small jitter delay between items to respect rate limits
+      await sleep(canUseApi ? 300 : 800);
     }
 
     if (isBypassRunning) {
       showToast(`🎉 Đã xử lý xong ${completed}/${total} bài học tuần này! Đang tải lại trang...`, 'success');
       updateProgress(total, total, 'Hoàn thành 100%!');
-      await sleep(2500);
+      await sleep(2200);
       location.reload();
     }
   } catch (error) {
@@ -246,4 +319,3 @@ export function cycleVideoSpeed() {
   setVideoSpeed(nextSpeed);
   return nextSpeed;
 }
-

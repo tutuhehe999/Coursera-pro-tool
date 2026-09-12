@@ -91,8 +91,22 @@ export function createPanel(handlers) {
 
       <!-- Action Modules (Tab Panes) -->
       <div class="cpt-actions">
-        <!-- TAB 1: HỌC TẬP (Quiz AI, Soạn bài tập, Thảo luận) -->
+        <!-- TAB 1: HỌC TẬP (Autopilot, Quiz AI, Soạn bài tập, Thảo luận) -->
         <div class="cpt-tab-pane active" id="cpt-pane-learning">
+          <!-- Master Course Autopilot -->
+          <button class="cpt-btn cpt-btn-autopilot" id="cpt-autopilot" title="Tự động hoàn thành toàn bộ khóa học từ Tuần 1 đến N (1-Click)">
+            <div class="cpt-btn-left">
+              <span class="cpt-icon-box cpt-icon-gold">
+                <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+              </span>
+              <div class="cpt-btn-info">
+                <span class="cpt-btn-name">Master Autopilot</span>
+                <span class="cpt-btn-desc">Cày tự động toàn khóa 1-Click</span>
+              </div>
+            </div>
+            <span class="cpt-tag cpt-tag-gold">🚀 1-CLICK</span>
+          </button>
+
           <!-- Auto Quiz AI -->
           <button class="cpt-btn cpt-btn-quiz" id="cpt-quiz" title="Tự động giải Quiz bằng Gemini / DeepSeek / Groq (Alt+Q)">
             <div class="cpt-btn-left">
@@ -271,6 +285,7 @@ export function createPanel(handlers) {
   setupHotkeys(handlers);
 
   // Bind action handlers
+  document.getElementById('cpt-autopilot')?.addEventListener('click', () => handlers.onAutopilot?.());
   document.getElementById('cpt-bypass')?.addEventListener('click', () => handlers.onBypass?.());
   document.getElementById('cpt-quiz')?.addEventListener('click', () => handlers.onQuiz?.());
   document.getElementById('cpt-auto-assignment')?.addEventListener('click', () => handlers.onAutoAssignment?.());

@@ -343,12 +343,14 @@ Your task is to provide the accurate, correct answer for each question.
 CRITICAL RULES:
 1. For single choice questions, your answer MUST match the EXACT character string of the correct choice.
 2. For multiple choice / "Check all that apply" questions, provide ALL correct options separated by a pipe character '|' (e.g. "First option|Second option").
-3. Return a valid JSON array containing one object per question in exact question order:
+3. For open-ended, reflection, or short-answer essay questions (where no options are listed), write a high-quality, professional academic paragraph (about 60-120 words) directly answering the prompt.
+4. Return a valid JSON array containing one object per question in exact question order:
 [
   { "id": 1, "answer": "Exact text of correct choice" },
-  { "id": 2, "answer": "First option|Second option" }
+  { "id": 2, "answer": "First option|Second option" },
+  { "id": 3, "answer": "High quality concise academic answer..." }
 ]
-4. Do NOT include markdown commentary. Return only the JSON array.`;
+5. Do NOT include markdown commentary. Return only the JSON array.`;
 
   // Format clearly for the LLM, injecting blacklist warnings if available
   const formattedPrompt = questions
