@@ -152,10 +152,12 @@ let lastRecordedReviewUrl = '';
  * Passively monitor for quiz review pages and record feedback in the background
  */
 function checkAndRecordReviewFeedback() {
+  if (location.href.includes('/attempt')) return; // Never record on /attempt!
+
   const isReviewPage =
     location.href.includes('/review') ||
     location.href.includes('/view-feedback') ||
-    Boolean(document.querySelector('.rc-FormPartsQuestion__error, [data-testid="test-feedback-incorrect"], [data-testid*="feedback" i]'));
+    Boolean(document.querySelector('.rc-FormPartsQuestion__error, [data-testid="test-feedback-incorrect"]'));
 
   if (isReviewPage && location.href !== lastRecordedReviewUrl) {
     lastRecordedReviewUrl = location.href;

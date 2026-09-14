@@ -1608,21 +1608,45 @@ export async function solveAndSubmitQuiz(outsideUrl = '') {
   }
 }
 
+let isQuizSolving = false;
+
 /**
  * Main Auto Quiz entry point (handles inside /attempt, outside landing page, and /review pages)
  */
 export async function handleAutoQuiz() {
   try {
-    // Check if on Review / Feedback results page
+    const isInsideAttempt = location.href.includes('/attempt');
+
+    if (isInsideAttempt) {
+      // User clicked while INSIDE the attempt page: solve, submit, and exit
+      console.log('[CourseraPro] Auto Quiz triggered inside /attempt page');
+      showToast('⚡ Bắt đầu tự động làm bài kiểm tra...', 'info');
+      const outsideUrl = location.href.replace(/\/attempt.*/, '');
+      await solveAndSubmitQuiz(outsideUrl);
+      return;
+    }
+
+    // Check if on Review / Feedback results page (strictly when NOT on /attempt)
     const isReviewPage =
       location.href.includes('/review') ||
       location.href.includes('/view-feedback') ||
-      Boolean(document.querySelector('.rc-FormPartsQuestion__error, [data-testid="test-feedback-incorrect"], [data-testid*="feedback" i]'));
+      Boolean(document.querySelector('.rc-FormPartsQuestion__error, [data-testid="test-feedback-incorrect"]'));
 
     if (isReviewPage) {
       showToast('🎯 Smart Retake: Đang phân tích kết quả bài thi để lưu câu đúng và loại trừ câu sai...', 'info');
       const stats = await recordQuizReviewFeedback();
       await sleep(1200);
+
+      const outsideUrl = location.href.replace(/\/(?:view-feedback|review).*/, '');
+
+      // CRITICAL: Save auto quiz state so when /attempt loads it automatically starts!
+      await chrome.storage.local.set({
+        [STORAGE_KEY_QUIZ]: {
+          active: true,
+          outsideUrl: outsideUrl,
+          timestamp: Date.now(),
+        },
+      });
 
       const enterBtn = findQuizEnterButton();
       if (enterBtn) {
@@ -1633,15 +1657,6 @@ export async function handleAutoQuiz() {
       } else {
         showToast(`🎯 Smart Retake: Đã chặn ${stats.wrongRecorded} câu sai & nạp ${stats.correctRecorded} câu đúng! Bấm "Try Again" để làm lại.`, 'success');
       }
-      return;
-    }
-
-    const isInsideAttempt = location.href.includes('/attempt');
-
-    if (isInsideAttempt) {
-      // User clicked while INSIDE the attempt page: solve, submit, and exit
-      const outsideUrl = location.href.replace(/\/attempt.*/, '');
-      await solveAndSubmitQuiz(outsideUrl);
       return;
     }
 
@@ -1671,12 +1686,10 @@ export async function handleAutoQuiz() {
       const itemId = meta.item_id || extractItemId();
       let initiated = false;
       if (courseId && itemId) {
-        showToast('Đang khởi tạo phiên làm bài qua Coursera API...', 'info');
         initiated = await apiInitiateAttempt(courseId, itemId);
       }
 
       if (initiated) {
-        showToast('Đang chuyển hướng vào trang làm bài...', 'info');
         const cleanUrl = location.href.split('?')[0].replace(/\/$/, '');
         window.location.href = `${cleanUrl}/attempt`;
       } else {
@@ -1713,21 +1726,29 @@ async function autoClickStartModal() {
 export async function checkAndResumeAutoQuiz() {
   try {
     if (!location.href.includes('/attempt')) return;
+    if (isQuizSolving) return;
 
     const result = await chrome.storage.local.get(STORAGE_KEY_QUIZ);
     const state = result[STORAGE_KEY_QUIZ];
 
     if (state && state.active) {
-      // Safety check: don't run if state is older than 5 minutes
-      if (Date.now() - state.timestamp > 300000) {
+      if (Date.now() - state.timestamp > 600000) {
         await chrome.storage.local.remove(STORAGE_KEY_QUIZ);
         return;
       }
 
       console.log('[CourseraPro] Auto quiz active state detected, starting solving process...');
+      showToast('⚡ Phát hiện phiên làm bài! Đang chuẩn bị giải tự động...', 'info');
+      await chrome.storage.local.remove(STORAGE_KEY_QUIZ);
+
       setTimeout(() => {
-        solveAndSubmitQuiz(state.outsideUrl);
-      }, 2000);
+        if (!isQuizSolving) {
+          isQuizSolving = true;
+          solveAndSubmitQuiz(state.outsideUrl).finally(() => {
+            isQuizSolving = false;
+          });
+        }
+      }, 1500);
     }
   } catch (e) {
     console.warn('[CourseraPro] Error checking auto quiz state:', e);
