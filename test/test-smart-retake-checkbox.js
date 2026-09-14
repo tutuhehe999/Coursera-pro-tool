@@ -396,7 +396,166 @@ const pickedD = resolveCheckboxSelections(
   qBlacklistWaterFall
 );
 assert.deepStrictEqual(pickedD, [0, 1, 3], 'Array format safely handled and auto-filled to 3');
-console.log('✓ Array format from LLM response safely handled');
+// Case E: 5 options with letter "E", e.g. "B, E" or "B and E" (the Kanban Question 2 issue)
+const qKanbanQ2 = {
+  type: 'checkbox',
+  prompt: 'Which of the following is valid on a Kanban Board? Select two.',
+  optionItems: [
+    { text: 'The WIP limit for Step X is 3. Step X is divided into "Doing" and "Done". The number of items in the "Doing" column is 0, and the number of items in the "Done" column is 0.' }, // A: 0
+    { text: 'The WIP limit for Step X is 3. Step X is divided into "Doing" and "Done". The number of items in the "Doing" column is 0, and the number of items in the "Done" column is 2.' }, // B: 1
+    { text: 'The WIP limit for Step X is 3. Step X is divided into "Doing" and "Done". The number of items in the "Doing" column is 2, and the number of items in the "Done" column is 1.' }, // C: 2
+    { text: 'The WIP limit for Step X is 3. Step X is divided into "Doing" and "Done". The number of items in the "Doing" column is 2, and the number of items in the "Done" column is 1. One of the items in the previous step is done and the developers want to move that item to Step X.' }, // D: 3
+    { text: 'The WIP limit for Step X is 3. Step X is divided into "Doing" and "Done". The number of items in the "Doing" column is 2, and the number of items in the "Done" column is 1. One of the items in the previous step is done and the developers want to move that item to Step Y.' } // E: 4
+  ]
+};
+
+// Import or use parseMultiSelectParts and resolveMultiSelectOptionIndices
+function parseMultiSelectPartsTest(answerDef, maxOptions = 5) {
+  if (!answerDef) return [];
+  if (Array.isArray(answerDef)) {
+    return answerDef.flatMap((item) => parseMultiSelectPartsTest(item, maxOptions));
+  }
+  const text = String(answerDef).trim();
+  if (!text) return [];
+
+  const maxLetter = String.fromCharCode(64 + Math.max(5, maxOptions));
+  const isLetterList =
+    /^(?:(?:options?|choices?)\s*)?[A-Z](?:\s*(?:[,|;&]|\band\b)\s*(?:(?:options?|choices?)\s*)?[A-Z])*\.?$/i.test(text) ||
+    /^(?:[A-Z]\s*)+$/i.test(text);
+
+  if (isLetterList) {
+    const regex = new RegExp(`\\b([A-${maxLetter}])\\b`, 'gi');
+    const matches = text.match(regex) || [];
+    if (matches.length > 0) {
+      return Array.from(new Set(matches.map((m) => m.toUpperCase())));
+    }
+  }
+
+  if (text.includes('|') || text.includes('\n') || text.includes(';')) {
+    return text.split(/[|\n;]/).map((s) => s.trim()).filter(Boolean);
+  }
+  if (text.includes(',')) {
+    return text.split(/\s*,\s*/).map((s) => s.trim()).filter(Boolean);
+  }
+  if (/\s+and\s+/i.test(text) && text.length < 100) {
+    return text.split(/\s+and\s+/i).map((s) => s.trim()).filter(Boolean);
+  }
+  return [text];
+}
+
+function resolveMultiSelectOptionIndicesTest(answerDef, optionItems = [], promptText = '', blacklist = []) {
+  const matchedIndices = new Set();
+  if (!optionItems || optionItems.length === 0) return matchedIndices;
+
+  const isBadOpt = (opt) => isAnswerBlacklisted(opt?.text, blacklist);
+  const maxOptions = optionItems.length;
+  const maxLetter = String.fromCharCode(64 + Math.max(5, maxOptions));
+
+  const countMatch = (promptText || '').match(/\b(?:select|choose)\s+(two|three|four|five|six|\d+)\b/i);
+  let expectedCount = 0;
+  if (countMatch) {
+    const wordMap = { two: 2, three: 3, four: 4, five: 5, six: 6 };
+    expectedCount = wordMap[countMatch[1].toLowerCase()] || parseInt(countMatch[1], 10) || 0;
+  } else if (/\b(?:select\s+all|check\s+all|choose\s+all|all\s+that\s+apply)\b/i.test(promptText)) {
+    expectedCount = 2;
+  }
+
+  const rawParts = parseMultiSelectPartsTest(answerDef, maxOptions);
+
+  for (const part of rawParts) {
+    if (!part) continue;
+    const cleanPart = cleanText(part);
+
+    const letterMatch = part.match(/^(?:option\s+|choice\s+)?([a-z])$/i);
+    if (letterMatch) {
+      const idx = letterMatch[1].toLowerCase().charCodeAt(0) - 97;
+      if (idx >= 0 && idx < optionItems.length && !isBadOpt(optionItems[idx])) {
+        matchedIndices.add(idx);
+        continue;
+      }
+    }
+
+    let exactMatched = false;
+    for (let i = 0; i < optionItems.length; i++) {
+      const opt = optionItems[i];
+      if (isBadOpt(opt)) continue;
+      if (cleanText(opt.text) === cleanPart) {
+        matchedIndices.add(i);
+        exactMatched = true;
+        break;
+      }
+    }
+    if (exactMatched) continue;
+
+    let bestIdx = -1;
+    let bestScore = 0;
+    for (let i = 0; i < optionItems.length; i++) {
+      const opt = optionItems[i];
+      if (isBadOpt(opt)) continue;
+      const cOpt = cleanText(opt.text);
+      if (cOpt.length >= 4 && cleanPart.length >= 4 && (cOpt.includes(cleanPart) || cleanPart.includes(cOpt))) {
+        const score = Math.min(cOpt.length, cleanPart.length) / Math.max(cOpt.length, cleanPart.length);
+        if (score > bestScore) {
+          bestScore = score;
+          bestIdx = i;
+        }
+      }
+    }
+    if (bestIdx !== -1 && bestScore >= 0.4) {
+      matchedIndices.add(bestIdx);
+      continue;
+    }
+  }
+
+  const targetCount = expectedCount > 0 ? expectedCount : 0;
+  if (targetCount > 0 && matchedIndices.size < targetCount) {
+    for (let i = 0; i < optionItems.length; i++) {
+      if (matchedIndices.size >= targetCount) break;
+      const opt = optionItems[i];
+      if (!isBadOpt(opt) && !matchedIndices.has(i)) {
+        matchedIndices.add(i);
+      }
+    }
+  }
+
+  if (matchedIndices.size === 0) {
+    const fallbackCount = targetCount > 0 ? targetCount : 2;
+    for (let i = 0; i < optionItems.length; i++) {
+      if (matchedIndices.size >= fallbackCount) break;
+      const opt = optionItems[i];
+      if (!isBadOpt(opt)) {
+        matchedIndices.add(i);
+      }
+    }
+  }
+
+  return Array.from(matchedIndices).sort((a, b) => a - b);
+}
+
+// Verify "B, E" resolution
+const pickedE1 = resolveMultiSelectOptionIndicesTest('B, E', qKanbanQ2.optionItems, qKanbanQ2.prompt, []);
+assert.deepStrictEqual(pickedE1, [1, 4], 'Must resolve B, E to indices [1, 4]');
+console.log('✓ Option letter E and comma separated "B, E" successfully resolved');
+
+// Verify "B and C" resolution
+const pickedE2 = resolveMultiSelectOptionIndicesTest('B and C', qKanbanQ2.optionItems, qKanbanQ2.prompt, []);
+assert.deepStrictEqual(pickedE2, [1, 2], 'Must resolve B and C to indices [1, 2]');
+console.log('✓ Conjunction "B and C" successfully resolved');
+
+// Verify "Option B, Option E" resolution
+const pickedE3 = resolveMultiSelectOptionIndicesTest('Option B, Option E', qKanbanQ2.optionItems, qKanbanQ2.prompt, []);
+assert.deepStrictEqual(pickedE3, [1, 4], 'Must resolve Option B, Option E to indices [1, 4]');
+console.log('✓ Long labels "Option B, Option E" successfully resolved');
+
+// Verify identical prefix collision avoidance (Option D contains Option C text)
+const pickedE4 = resolveMultiSelectOptionIndicesTest(qKanbanQ2.optionItems[3].text, qKanbanQ2.optionItems, qKanbanQ2.prompt, []);
+assert.ok(pickedE4.includes(3), 'Must match index 3 (Option D), avoiding prefix collision with Option C');
+console.log('✓ Long option text with identical prefix matches exact option without collision');
+
+// Verify empty/failed answer auto-fills required count
+const pickedE5 = resolveMultiSelectOptionIndicesTest('', qKanbanQ2.optionItems, qKanbanQ2.prompt, []);
+assert.strictEqual(pickedE5.length, 2, 'Must auto-fill exactly 2 options for "Select two" when AI fails');
+console.log('✓ Empty AI response auto-fills candidate options to prevent red box lock');
 
 console.log('\n======================================================');
 console.log('🎉 ALL SMART RETAKE & CHECKBOX TESTS PASSED 100%!');

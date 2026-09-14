@@ -190,6 +190,14 @@ function safeClick(element) {
 function selectOptionElement(input, wrapper, badgeLabel) {
   if (!input) return;
 
+  // If checkbox is already checked, avoid clicking again which would uncheck it
+  if (input.type === 'checkbox' && input.checked) {
+    if (badgeLabel) {
+      addBadge(wrapper || input.closest('label') || input.parentElement || input, badgeLabel);
+    }
+    return;
+  }
+
   const labelTarget =
     input.closest('label') ||
     (input.id ? document.querySelector(`label[for="${CSS.escape(input.id)}"]`) : null) ||
@@ -778,6 +786,34 @@ function extractJson(text) {
     } catch (_e) {}
   }
 
+  // 5. Fallback for malformed JSON with unescaped quotes inside "answer": "..."
+  const itemRegex = /\{\s*"id"\s*:\s*(\d+)\s*,\s*"answer"\s*:\s*"([\s\S]*?)"\s*\}/g;
+  const regexResults = [];
+  let match;
+  while ((match = itemRegex.exec(cleaned)) !== null) {
+    regexResults.push({ id: parseInt(match[1], 10), answer: match[2] });
+  }
+  if (regexResults.length > 0) {
+    return regexResults;
+  }
+
+  // 6. Line-by-line fallback for nested unescaped quotes
+  const lines = cleaned.split('\n');
+  let currentId = null;
+  const lineResults = [];
+  for (const line of lines) {
+    const idMatch = line.match(/"id"\s*:\s*(\d+)/);
+    if (idMatch) currentId = parseInt(idMatch[1], 10);
+    const ansMatch = line.match(/"answer"\s*:\s*"([\s\S]*)"/);
+    if (ansMatch && currentId !== null) {
+      lineResults.push({ id: currentId, answer: ansMatch[1] });
+      currentId = null;
+    }
+  }
+  if (lineResults.length > 0) {
+    return lineResults;
+  }
+
   return null;
 }
 
@@ -973,13 +1009,13 @@ async function generateQuizAnswers(questions, extraOptions = {}) {
 Your task is to provide the accurate, correct answer for each question.
 
 CRITICAL RULES:
-1. For single choice questions, your answer MUST match the EXACT character string of the correct choice.
-2. For multiple choice / "Check all that apply" / "Select three" questions, you MUST provide ALL correct options separated by a pipe character '|' (e.g. "First option|Second option|Third option"). You must never pick just one option for a multi-select question!
+1. For single choice questions, your answer MUST match the EXACT character string of the correct choice, or its option letter (e.g. "B").
+2. For multiple choice / "Check all that apply" / "Select three" / "Select two" questions, you MUST provide ALL correct options. You can provide the option letters (e.g. "B|C" or "A|D|E") or the option texts joined by pipe '|'. Providing option letters (e.g. "B|C") is strongly preferred to avoid quotation escaping errors. You must never pick just one option for a multi-select question!
 3. For open-ended, reflection, or short-answer essay questions (where no options are listed), write a high-quality, professional academic paragraph (about 60-120 words) directly answering the prompt.
 4. Return a valid JSON array containing one object per question in exact question order:
 [
   { "id": 1, "answer": "Exact text of correct choice" },
-  { "id": 2, "answer": "First option|Second option|Third option" },
+  { "id": 2, "answer": "B|C" },
   { "id": 3, "answer": "High quality concise academic answer..." }
 ]
 5. Do NOT include markdown commentary. Return only the JSON array.`;
@@ -1010,7 +1046,7 @@ CRITICAL RULES:
           const c = wordMap[countMatch[1].toLowerCase()] || parseInt(countMatch[1], 10);
           if (c > 1) countNote = ` (EXACTLY ${c} OPTIONS REQUIRED)`;
         }
-        item += `\n[QUESTION TYPE: MULTI-SELECT CHECKBOX${countNote} - You MUST select ALL required options and join them with a pipe '|'. Example: "Option 1|Option 2|Option 3"]`;
+        item += `\n[QUESTION TYPE: MULTI-SELECT CHECKBOX${countNote} - You MUST select ALL required options and join with '|'. Preferred format: option letters like "B|C" or "A|D".]`;
       } else if (optionsList.length > 0) {
         item += `\n[QUESTION TYPE: SINGLE CHOICE RADIO - Select EXACTLY ONE correct option.]`;
       }
@@ -3448,6 +3484,17 @@ function discoverQuestions() {
           promptText = promptEl.textContent?.trim() || '';
         }
 
+        // Include any instruction / help / legend element (e.g. "Select two.", "Select all that apply")
+        const instructionEl = questionBlock.querySelector(
+          '.rc-FormPartsQuestion__help, .rc-FormPartsQuestion__description, .rc-FormPartsQuestion__legend, [class*="instruction" i], [class*="subtitle" i], [class*="help" i]'
+        );
+        if (instructionEl && instructionEl !== promptEl) {
+          const instText = instructionEl.textContent?.trim();
+          if (instText && !promptText.toLowerCase().includes(instText.toLowerCase())) {
+            promptText += ` (${instText})`;
+          }
+        }
+
         // Priority 2: Clone container and remove inputs/labels to isolate prompt
         if (!promptText) {
           try {
@@ -3456,6 +3503,16 @@ function discoverQuestions() {
             promptText = clone.textContent?.trim() || '';
           } catch (_e) {
             promptText = questionBlock.innerText || questionBlock.textContent || '';
+          }
+        }
+
+        // If checkboxes and instruction not yet in prompt, check container text
+        if (!promptText.toLowerCase().includes('select') && questionBlock) {
+          const containerText = questionBlock.innerText || questionBlock.textContent || '';
+          const matchInstruction = containerText.match(/\((?:select|choose)\s+[^)]+\)/i) ||
+                                  containerText.match(/\b(?:select|choose)\s+(?:all|two|three|four|five|\d+)[^.\n]*/i);
+          if (matchInstruction && !promptText.toLowerCase().includes(matchInstruction[0].toLowerCase())) {
+            promptText += ` (${matchInstruction[0]})`;
           }
         }
 
@@ -3531,6 +3588,227 @@ function discoverQuestions() {
 }
 
 /**
+ * Split multi-select raw answer into component targets
+ * @param {string|Array} answerDef
+ * @param {number} [maxOptions=5]
+ * @returns {string[]}
+ */
+function parseMultiSelectParts(answerDef, maxOptions = 5) {
+  if (!answerDef) return [];
+  if (Array.isArray(answerDef)) {
+    return answerDef.flatMap((item) => parseMultiSelectParts(item, maxOptions));
+  }
+  const text = String(answerDef).trim();
+  if (!text) return [];
+
+  const maxLetter = String.fromCharCode(64 + Math.max(5, maxOptions));
+
+  // 1. If text is a letter combination like "B, C", "B and E", "Option B, Option C", "A, B, E", "B|C"
+  const isLetterList =
+    /^(?:(?:options?|choices?)\s*)?[A-Z](?:\s*(?:[,|;&]|\band\b)\s*(?:(?:options?|choices?)\s*)?[A-Z])*\.?$/i.test(text) ||
+    /^(?:[A-Z]\s*)+$/i.test(text);
+
+  if (isLetterList) {
+    const regex = new RegExp(`\\b([A-${maxLetter}])\\b`, 'gi');
+    const matches = text.match(regex) || [];
+    if (matches.length > 0) {
+      return Array.from(new Set(matches.map((m) => m.toUpperCase())));
+    }
+  }
+
+  // 2. If it contains pipes, semicolons, or newlines
+  if (text.includes('|') || text.includes('\n') || text.includes(';')) {
+    return text.split(/[|\n;]/).map((s) => s.trim()).filter(Boolean);
+  }
+
+  // 3. If it's a comma-separated list of items
+  if (text.includes(',')) {
+    return text.split(/\s*,\s*/).map((s) => s.trim()).filter(Boolean);
+  }
+
+  // 4. If it has " and " connecting options
+  if (/\s+and\s+/i.test(text) && text.length < 100) {
+    return text.split(/\s+and\s+/i).map((s) => s.trim()).filter(Boolean);
+  }
+
+  return [text];
+}
+
+/**
+ * Universal multi-select option resolver
+ * Converts any AI response format (letters, comma-separated, pipe-separated, full text, etc.)
+ * into precise option indices for checkboxes
+ * @param {string|Array} answerDef
+ * @param {Array<{input: Element, text: string}>} optionItems
+ * @param {string} promptText
+ * @param {Array<string>} blacklist
+ * @returns {Set<number>} Set of option indices to check
+ */
+function resolveMultiSelectOptionIndices(answerDef, optionItems = [], promptText = '', blacklist = []) {
+  const matchedIndices = new Set();
+  if (!optionItems || optionItems.length === 0) return matchedIndices;
+
+  const isBadOpt = (opt) => isAnswerBlacklisted(opt?.text, blacklist);
+  const maxOptions = optionItems.length;
+  const maxLetter = String.fromCharCode(64 + Math.max(5, maxOptions));
+
+  // 1. Determine expected count from prompt
+  const countMatch = (promptText || '').match(/\b(?:select|choose)\s+(two|three|four|five|six|\d+)\b/i);
+  let expectedCount = 0;
+  if (countMatch) {
+    const wordMap = { two: 2, three: 3, four: 4, five: 5, six: 6 };
+    expectedCount = wordMap[countMatch[1].toLowerCase()] || parseInt(countMatch[1], 10) || 0;
+  } else if (/\b(?:select\s+all|check\s+all|choose\s+all|all\s+that\s+apply)\b/i.test(promptText)) {
+    expectedCount = 2;
+  }
+
+  // 2. Parse answerDef into raw parts
+  const rawParts = parseMultiSelectParts(answerDef, maxOptions);
+
+  // 3. Match each part
+  for (const part of rawParts) {
+    if (!part) continue;
+    const cleanPart = cleanText(part);
+
+    // Letter matching: e.g. 'A', 'B', 'Option C', 'Choice D', 'E'
+    const letterMatch = part.match(/^(?:option\s+|choice\s+)?([a-z])$/i);
+    if (letterMatch) {
+      const idx = letterMatch[1].toLowerCase().charCodeAt(0) - 97;
+      if (idx >= 0 && idx < optionItems.length && !isBadOpt(optionItems[idx])) {
+        matchedIndices.add(idx);
+        continue;
+      }
+    }
+
+    // Direct exact match
+    let exactMatched = false;
+    for (let i = 0; i < optionItems.length; i++) {
+      const opt = optionItems[i];
+      if (isBadOpt(opt)) continue;
+      if (cleanText(opt.text) === cleanPart) {
+        matchedIndices.add(i);
+        exactMatched = true;
+        break;
+      }
+    }
+    if (exactMatched) continue;
+
+    // Substring / length ratio match with collision protection
+    let bestIdx = -1;
+    let bestScore = 0;
+    for (let i = 0; i < optionItems.length; i++) {
+      const opt = optionItems[i];
+      if (isBadOpt(opt)) continue;
+      const cOpt = cleanText(opt.text);
+      if (cOpt.length >= 4 && cleanPart.length >= 4 && (cOpt.includes(cleanPart) || cleanPart.includes(cOpt))) {
+        const score = Math.min(cOpt.length, cleanPart.length) / Math.max(cOpt.length, cleanPart.length);
+        if (score > bestScore) {
+          bestScore = score;
+          bestIdx = i;
+        }
+      }
+    }
+    if (bestIdx !== -1 && bestScore >= 0.4) {
+      matchedIndices.add(bestIdx);
+      continue;
+    }
+
+    // Word overlap match
+    let bestWordIdx = -1;
+    let bestWordScore = 0;
+    const partWords = new Set(cleanPart.split(' ').filter((w) => w.length > 2));
+    for (let i = 0; i < optionItems.length; i++) {
+      const opt = optionItems[i];
+      if (isBadOpt(opt)) continue;
+      const cOpt = cleanText(opt.text);
+      const optWords = cOpt.split(' ').filter((w) => w.length > 2);
+      let overlap = 0;
+      for (const w of optWords) {
+        if (partWords.has(w)) overlap++;
+      }
+      const score = optWords.length > 0 ? overlap / Math.max(partWords.size, optWords.length) : 0;
+      if (score > bestWordScore && score > 0.3) {
+        bestWordScore = score;
+        bestWordIdx = i;
+      }
+    }
+    if (bestWordIdx !== -1) {
+      matchedIndices.add(bestWordIdx);
+    }
+  }
+
+  // 4. Letter search in full text as fallback:
+  if (matchedIndices.size < (expectedCount || 1)) {
+    const rawStr = String(answerDef);
+    const regex = new RegExp(`\\b(?:option|choice)?\\s*([A-${maxLetter}])\\b`, 'gi');
+    let m;
+    while ((m = regex.exec(rawStr)) !== null) {
+      const idx = m[1].toUpperCase().charCodeAt(0) - 65;
+      if (idx >= 0 && idx < optionItems.length && !isBadOpt(optionItems[idx])) {
+        matchedIndices.add(idx);
+      }
+    }
+  }
+
+  // 5. Expected count fulfillment: If we have an expected count and matched fewer than that,
+  // fulfill with additional non-blacklisted options!
+  const targetCount = expectedCount > 0 ? expectedCount : 0;
+  if (targetCount > 0 && matchedIndices.size < targetCount) {
+    for (let i = 0; i < optionItems.length; i++) {
+      if (matchedIndices.size >= targetCount) break;
+      const opt = optionItems[i];
+      if (!isBadOpt(opt) && !matchedIndices.has(i)) {
+        matchedIndices.add(i);
+      }
+    }
+  }
+
+  // 6. Absolute safety net: If for ANY reason matchedIndices is still empty:
+  // Pick candidate non-blacklisted options so the question is NEVER left empty and red!
+  if (matchedIndices.size === 0) {
+    const fallbackCount = targetCount > 0 ? targetCount : 2;
+    for (let i = 0; i < optionItems.length; i++) {
+      if (matchedIndices.size >= fallbackCount) break;
+      const opt = optionItems[i];
+      if (!isBadOpt(opt)) {
+        matchedIndices.add(i);
+      }
+    }
+  }
+
+  return matchedIndices;
+}
+
+/**
+ * Last-resort fallback to ensure a question is never left empty and red
+ * @param {object} question
+ * @param {Record<string, string[]>} quizBlacklist
+ */
+function autoSelectFallbackOptions(question, quizBlacklist = {}) {
+  if (!question || !Array.isArray(question.optionItems) || question.optionItems.length === 0) return;
+
+  const qBlacklist = getBlacklistedAnswersForQuestion(question.prompt, quizBlacklist);
+  const isBadOpt = (opt) => isAnswerBlacklisted(opt?.text, qBlacklist);
+  const validOptionItems = question.optionItems.filter((opt) => !isBadOpt(opt));
+  const pool = validOptionItems.length > 0 ? validOptionItems : question.optionItems;
+
+  const countMatch = (question.prompt || '').match(/\b(?:select|choose)\s+(two|three|four|five|six|\d+)\b/i);
+  let expectedCount = 1;
+  if (countMatch) {
+    const wordMap = { two: 2, three: 3, four: 4, five: 5, six: 6 };
+    expectedCount = wordMap[countMatch[1].toLowerCase()] || parseInt(countMatch[1], 10) || 1;
+  } else if (question.type === 'checkbox' || /\b(?:select\s+all|check\s+all|choose\s+all|all\s+that\s+apply)\b/i.test(question.prompt)) {
+    expectedCount = 2;
+  }
+
+  const toSelect = pool.slice(0, expectedCount);
+  for (const opt of toSelect) {
+    const wrapper = opt.input.closest('label') || opt.input.parentElement || opt.input;
+    selectOptionElement(opt.input, wrapper, '🤖 AI');
+  }
+}
+
+/**
  * Fill answers for discovered questions
  * @param {Array<object>} questions
  * @param {Array<object>} answers
@@ -3574,7 +3852,7 @@ async function fillDiscoveredAnswers(questions, answers, sourceMatchIndexes = ne
       let chosenOpt = null;
       const validOptions = (q.optionItems || []).filter((opt) => !isBlacklisted(opt));
 
-      // Single letter match ('a', 'b', 'c', 'd')
+      // Single letter match ('a', 'b', 'c', 'd', etc.)
       if (cleanAns.length === 1 && cleanAns >= 'a' && cleanAns <= 'z') {
         const letterIdx = cleanAns.charCodeAt(0) - 97;
         if (q.optionItems[letterIdx] && !isBlacklisted(q.optionItems[letterIdx])) {
@@ -3636,108 +3914,12 @@ async function fillDiscoveredAnswers(questions, answers, sourceMatchIndexes = ne
         questionFilled = true;
       }
     } else if (q.type === 'checkbox') {
-      // Multiple choice: split into targets
-      let rawParts = [];
-      if (Array.isArray(ansObj?.answer)) {
-        rawParts = ansObj.answer;
-      } else if (Array.isArray(ansObj?.definition)) {
-        rawParts = ansObj.definition;
-      } else if (answerDef.includes('|') || answerDef.includes('\n') || answerDef.includes(';')) {
-        rawParts = answerDef.split(/[|\n;]/);
-      } else if (/\b[A-Da-d](?:\s*,\s*[A-Da-d])+\b/.test(answerDef)) {
-        rawParts = answerDef.split(/\s*,\s*/);
-      } else {
-        rawParts = [answerDef];
-      }
-
-      const cleanParts = rawParts.map((p) => cleanText(p)).filter(Boolean);
-      if (cleanParts.length === 0 && cleanAns) cleanParts.push(cleanAns);
-
-      const matchedOptionIndices = new Set();
-
-      for (const part of cleanParts) {
-        // Check single letter
-        const letterMatch = part.match(/^(?:option\s+|choice\s+)?([a-z])$/i);
-        if (letterMatch) {
-          const letterIdx = letterMatch[1].toLowerCase().charCodeAt(0) - 97;
-          if (q.optionItems[letterIdx] && !isBlacklisted(q.optionItems[letterIdx])) {
-            matchedOptionIndices.add(letterIdx);
-            continue;
-          }
-        }
-
-        // Priority 1: Exact cleaned match
-        let partMatched = false;
-        for (let oIdx = 0; oIdx < q.optionItems.length; oIdx++) {
-          const opt = q.optionItems[oIdx];
-          const cOpt = cleanText(opt.text);
-          if (cOpt === part && !isBlacklisted(opt)) {
-            matchedOptionIndices.add(oIdx);
-            partMatched = true;
-            break;
-          }
-        }
-
-        // Priority 2: Substring match
-        if (!partMatched) {
-          for (let oIdx = 0; oIdx < q.optionItems.length; oIdx++) {
-            const opt = q.optionItems[oIdx];
-            const cOpt = cleanText(opt.text);
-            if (cOpt.length >= 4 && part.length >= 4 && (cOpt.includes(part) || part.includes(cOpt)) && !isBlacklisted(opt)) {
-              matchedOptionIndices.add(oIdx);
-              partMatched = true;
-              break;
-            }
-          }
-        }
-
-        // Priority 3: Word overlap scoring
-        if (!partMatched) {
-          let bestScore = 0;
-          let bestIdx = -1;
-          const partWords = new Set(part.split(' ').filter((w) => w.length > 2));
-          for (let oIdx = 0; oIdx < q.optionItems.length; oIdx++) {
-            const opt = q.optionItems[oIdx];
-            if (isBlacklisted(opt)) continue;
-            const cOpt = cleanText(opt.text);
-            const optWords = cOpt.split(' ').filter((w) => w.length > 2);
-            let overlap = 0;
-            for (const w of optWords) {
-              if (partWords.has(w)) overlap++;
-            }
-            const score = optWords.length > 0 ? overlap / Math.max(partWords.size, optWords.length) : 0;
-            if (score > bestScore && score > 0.35) {
-              bestScore = score;
-              bestIdx = oIdx;
-            }
-          }
-          if (bestIdx >= 0) {
-            matchedOptionIndices.add(bestIdx);
-            partMatched = true;
-          }
-        }
-      }
-
-      // Check expected count from prompt (e.g. "Select three", "Select 3", "Select two")
-      const countMatch = q.prompt.match(/\b(?:select|choose)\s+(two|three|four|five|\d+)\b/i);
-      let expectedCount = 0;
-      if (countMatch) {
-        const wordMap = { two: 2, three: 3, four: 4, five: 5 };
-        expectedCount = wordMap[countMatch[1].toLowerCase()] || parseInt(countMatch[1], 10) || 0;
-      }
-
-      // If prompt specifically requires N options and we matched fewer than N,
-      // select additional non-blacklisted options to meet the required count!
-      if (expectedCount > 0 && matchedOptionIndices.size < expectedCount) {
-        for (let oIdx = 0; oIdx < q.optionItems.length; oIdx++) {
-          if (matchedOptionIndices.size >= expectedCount) break;
-          const opt = q.optionItems[oIdx];
-          if (!isBlacklisted(opt) && !matchedOptionIndices.has(oIdx)) {
-            console.log(`[CourseraPro] Auto-selecting required option ${oIdx + 1} to meet prompt requirement (${expectedCount} options)`);
-            matchedOptionIndices.add(oIdx);
-          }
-        }
-      }
+      const matchedOptionIndices = resolveMultiSelectOptionIndices(
+        ansObj?.answer || ansObj?.definition || answerDef,
+        q.optionItems,
+        q.prompt,
+        qBlacklist
+      );
 
       // Apply selection to all matched checkboxes
       for (const idx of matchedOptionIndices) {
@@ -3827,7 +4009,7 @@ async function retrySolveSingleQuestion(question, quizBlacklist = {}) {
 
   const countNote = expectedCount > 1 ? ` (EXACTLY ${expectedCount} OPTIONS REQUIRED)` : '';
   const rule = isCheckbox
-    ? `CRITICAL RULE: This is a MULTI-SELECT CHECKBOX question${countNote}. Respond with ALL correct option texts or letters separated by a pipe character '|' (e.g. "A|B|C" or "Option 1|Option 2"). Do NOT return just 1 choice!`
+    ? `CRITICAL RULE: This is a MULTI-SELECT CHECKBOX question${countNote}. Respond with ALL correct option letters (e.g. "B|C" or "A|D") or texts separated by '|'. Using option letters like "B|C" is strongly preferred!`
     : `CRITICAL RULE: Respond with ONLY the exact text of the correct choice or its letter (A, B, C, or D). Do not add any explanation or preamble.`;
 
   const prompt = `Solve this university exam question accurately:
@@ -3842,7 +4024,7 @@ ${rule}`;
     const rawResult = await generateContent(
       prompt,
       isCheckbox
-        ? 'You are a university exam expert. Provide ALL correct options separated by "|" for multi-select questions.'
+        ? 'You are a university exam expert. Provide ALL correct option letters separated by "|" (e.g. "B|C") for multi-select questions.'
         : 'You are a university exam expert. Provide only the single best answer option text or letter.',
       null,
       { temperature: 0.1 }
@@ -3851,36 +4033,12 @@ ${rule}`;
     if (!rawResult || typeof rawResult !== 'string') return false;
 
     if (isCheckbox) {
-      const parts = rawResult.split(/[|\n;]/).map(p => cleanText(p)).filter(Boolean);
-      const matchedIndices = new Set();
-
-      for (const part of parts) {
-        const letterMatch = part.match(/^(?:option\s+|choice\s+)?([a-z])$/i);
-        if (letterMatch) {
-          const idx = letterMatch[1].toLowerCase().charCodeAt(0) - 97;
-          if (question.optionItems[idx] && !isBadOpt(question.optionItems[idx])) {
-            matchedIndices.add(idx);
-          }
-        }
-        for (let i = 0; i < question.optionItems.length; i++) {
-          const opt = question.optionItems[i];
-          if (isBadOpt(opt)) continue;
-          const cOpt = cleanText(opt.text);
-          if (cOpt === part || (cOpt.length >= 4 && part.length >= 4 && (cOpt.includes(part) || part.includes(cOpt)))) {
-            matchedIndices.add(i);
-          }
-        }
-      }
-
-      if (expectedCount > 0 && matchedIndices.size < expectedCount) {
-        for (let i = 0; i < question.optionItems.length; i++) {
-          if (matchedIndices.size >= expectedCount) break;
-          const opt = question.optionItems[i];
-          if (!isBadOpt(opt) && !matchedIndices.has(i)) {
-            matchedIndices.add(i);
-          }
-        }
-      }
+      const matchedIndices = resolveMultiSelectOptionIndices(
+        rawResult,
+        question.optionItems,
+        question.prompt,
+        qBlacklist
+      );
 
       let checkedAny = false;
       for (const idx of matchedIndices) {
@@ -4231,6 +4389,13 @@ async function solveAndSubmitQuiz(outsideUrl = '') {
       await sleep(1000);
     }
 
+    // Clear any previous error box-shadow from previous runs
+    for (const q of questions) {
+      if (q.container && q.container.style.boxShadow) {
+        q.container.style.boxShadow = '';
+      }
+    }
+
     if (questions.length === 0) {
       // Check if we are on an uninitialized /attempt page (blank white screen)
       if (location.href.includes('/attempt')) {
@@ -4387,7 +4552,16 @@ async function solveAndSubmitQuiz(outsideUrl = '') {
       unanswered = questions.filter((q) => !isQuestionAnsweredInDom(q));
     }
 
-    // 5c. CRITICAL SUBMIT SAFEGUARD: If any question is still unanswered, DO NOT SUBMIT, DO NOT EXIT!
+    // 5c. Safety net: If any question is still unanswered after retry, auto-select candidates so it is never left empty and red!
+    if (unanswered.length > 0) {
+      console.log(`[CourseraPro] Auto-filling ${unanswered.length} remaining questions with best candidates...`);
+      for (const uq of unanswered) {
+        autoSelectFallbackOptions(uq, quizBlacklist);
+      }
+      unanswered = questions.filter((q) => !isQuestionAnsweredInDom(q));
+    }
+
+    // 5d. CRITICAL SUBMIT SAFEGUARD: If any question is STILL unanswered after all fallbacks, DO NOT SUBMIT, DO NOT EXIT!
     if (unanswered.length > 0) {
       const answeredCount = questions.length - unanswered.length;
       updateProgress(answeredCount, questions.length, `Đã điền ${answeredCount}/${questions.length}`);

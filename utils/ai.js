@@ -148,6 +148,34 @@ export function extractJson(text) {
     } catch (_e) {}
   }
 
+  // 5. Fallback for malformed JSON with unescaped quotes inside "answer": "..."
+  const itemRegex = /\{\s*"id"\s*:\s*(\d+)\s*,\s*"answer"\s*:\s*"([\s\S]*?)"\s*\}/g;
+  const regexResults = [];
+  let match;
+  while ((match = itemRegex.exec(cleaned)) !== null) {
+    regexResults.push({ id: parseInt(match[1], 10), answer: match[2] });
+  }
+  if (regexResults.length > 0) {
+    return regexResults;
+  }
+
+  // 6. Line-by-line fallback for nested unescaped quotes
+  const lines = cleaned.split('\n');
+  let currentId = null;
+  const lineResults = [];
+  for (const line of lines) {
+    const idMatch = line.match(/"id"\s*:\s*(\d+)/);
+    if (idMatch) currentId = parseInt(idMatch[1], 10);
+    const ansMatch = line.match(/"answer"\s*:\s*"([\s\S]*)"/);
+    if (ansMatch && currentId !== null) {
+      lineResults.push({ id: currentId, answer: ansMatch[1] });
+      currentId = null;
+    }
+  }
+  if (lineResults.length > 0) {
+    return lineResults;
+  }
+
   return null;
 }
 
@@ -343,13 +371,13 @@ export async function generateQuizAnswers(questions, extraOptions = {}) {
 Your task is to provide the accurate, correct answer for each question.
 
 CRITICAL RULES:
-1. For single choice questions, your answer MUST match the EXACT character string of the correct choice.
-2. For multiple choice / "Check all that apply" / "Select three" questions, you MUST provide ALL correct options separated by a pipe character '|' (e.g. "First option|Second option|Third option"). You must never pick just one option for a multi-select question!
+1. For single choice questions, your answer MUST match the EXACT character string of the correct choice, or its option letter (e.g. "B").
+2. For multiple choice / "Check all that apply" / "Select three" / "Select two" questions, you MUST provide ALL correct options. You can provide the option letters (e.g. "B|C" or "A|D|E") or the option texts joined by pipe '|'. Providing option letters (e.g. "B|C") is strongly preferred to avoid quotation escaping errors. You must never pick just one option for a multi-select question!
 3. For open-ended, reflection, or short-answer essay questions (where no options are listed), write a high-quality, professional academic paragraph (about 60-120 words) directly answering the prompt.
 4. Return a valid JSON array containing one object per question in exact question order:
 [
   { "id": 1, "answer": "Exact text of correct choice" },
-  { "id": 2, "answer": "First option|Second option|Third option" },
+  { "id": 2, "answer": "B|C" },
   { "id": 3, "answer": "High quality concise academic answer..." }
 ]
 5. Do NOT include markdown commentary. Return only the JSON array.`;
@@ -380,7 +408,7 @@ CRITICAL RULES:
           const c = wordMap[countMatch[1].toLowerCase()] || parseInt(countMatch[1], 10);
           if (c > 1) countNote = ` (EXACTLY ${c} OPTIONS REQUIRED)`;
         }
-        item += `\n[QUESTION TYPE: MULTI-SELECT CHECKBOX${countNote} - You MUST select ALL required options and join them with a pipe '|'. Example: "Option 1|Option 2|Option 3"]`;
+        item += `\n[QUESTION TYPE: MULTI-SELECT CHECKBOX${countNote} - You MUST select ALL required options and join with '|'. Preferred format: option letters like "B|C" or "A|D".]`;
       } else if (optionsList.length > 0) {
         item += `\n[QUESTION TYPE: SINGLE CHOICE RADIO - Select EXACTLY ONE correct option.]`;
       }

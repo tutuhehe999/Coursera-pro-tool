@@ -184,6 +184,14 @@ export function safeClick(element) {
 export function selectOptionElement(input, wrapper, badgeLabel) {
   if (!input) return;
 
+  // If checkbox is already checked, avoid clicking again which would uncheck it
+  if (input.type === 'checkbox' && input.checked) {
+    if (badgeLabel) {
+      addBadge(wrapper || input.closest('label') || input.parentElement || input, badgeLabel);
+    }
+    return;
+  }
+
   const labelTarget =
     input.closest('label') ||
     (input.id ? document.querySelector(`label[for="${CSS.escape(input.id)}"]`) : null) ||
