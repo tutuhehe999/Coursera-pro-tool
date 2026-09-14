@@ -6,6 +6,8 @@
  * 3. Groq (OpenAI-compatible Chat Completions - Ultra-fast Llama 3.3)
  */
 
+import { cleanText, wordOverlapRatio, getBlacklistedAnswersForQuestion, isAnswerBlacklisted } from './dom.js';
+
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const DEEPSEEK_API_URL = 'https://api.deepseek.com/v1/chat/completions';
 const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
@@ -384,8 +386,7 @@ CRITICAL RULES:
       }
 
       // Check Smart Retake blacklist
-      const cp = cleanText(promptText);
-      const qBlacklist = blacklist[cp];
+      const qBlacklist = getBlacklistedAnswersForQuestion(promptText, blacklist);
       if (Array.isArray(qBlacklist) && qBlacklist.length > 0) {
         item += `\n⚠️ AVOID THESE (Confirmed INCORRECT in previous attempts): ${JSON.stringify(qBlacklist)}`;
       }

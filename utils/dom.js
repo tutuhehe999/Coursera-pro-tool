@@ -202,3 +202,136 @@ export function extendStringPrototype() {
     };
   }
 }
+
+/**
+ * Safely decode common HTML entities
+ * @param {string} str
+ * @returns {string}
+ */
+export function decodeHtml(str) {
+  if (!str || typeof str !== 'string' || !str.includes('&')) return str || '';
+  return str
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&le;/g, '<=')
+    .replace(/&ge;/g, '>=')
+    .replace(/&ne;/g, '!=');
+}
+
+/**
+ * Clean string for reliable comparison
+ * Preserves decimal points between numbers (e.g. 10.5%) and relational operators (>=, <=, >, <, +, -)
+ * @param {string} str
+ * @returns {string}
+ */
+export function cleanText(str) {
+  if (!str) return '';
+  let text = decodeHtml(String(str));
+  return text
+    .toLowerCase()
+    .replace(/^\s*(?:question\s*\d+[\s:.-]*|\d+[.):]\s+|[a-z0-9]{1,2}[.):]\s+)/i, '') // remove "Question 1:", "10. ", "A. "
+    .replace(/(?<!\d)\.|\.(?!\d)/g, '') // remove dots that are not decimal points
+    .replace(/[,;:!?"'‘’“”`~()\[\]{}]/g, '') // remove punctuation noise, keep math: < > = + - * / % ^
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Calculate word overlap ratio between two strings
+ * @param {string} str1
+ * @param {string} str2
+ * @returns {number} 0.0 to 1.0
+ */
+export function wordOverlapRatio(str1, str2) {
+  if (!str1 || !str2) return 0;
+  const words1 = new Set(cleanText(str1).split(' ').filter((w) => w.length > 2));
+  const words2 = new Set(cleanText(str2).split(' ').filter((w) => w.length > 2));
+  if (words1.size === 0 || words2.size === 0) return 0;
+  let overlap = 0;
+  for (const w of words1) {
+    if (words2.has(w)) overlap++;
+  }
+  return overlap / Math.min(words1.size, words2.size);
+}
+
+/**
+ * Retrieve all blacklisted answers for a question prompt using fuzzy and word-overlap matching
+ * @param {string} prompt - Question prompt text
+ * @param {Record<string, string[]>} blacklistMap
+ * @returns {string[]} List of blacklisted answers (cleaned)
+ */
+export function getBlacklistedAnswersForQuestion(prompt, blacklistMap = {}) {
+  if (!prompt || !blacklistMap || typeof blacklistMap !== 'object') return [];
+  const cleanP = cleanText(prompt);
+  if (!cleanP) return [];
+
+  const badAnswers = new Set();
+
+  // 1. Direct exact key lookup
+  if (Array.isArray(blacklistMap[cleanP])) {
+    for (const ans of blacklistMap[cleanP]) {
+      const c = cleanText(ans);
+      if (c) badAnswers.add(c);
+    }
+  }
+
+  // 2. Iterate all keys in blacklistMap with fuzzy matching
+  for (const [bKey, answers] of Object.entries(blacklistMap)) {
+    if (!Array.isArray(answers) || answers.length === 0) continue;
+    const cleanBKey = cleanText(bKey);
+    if (!cleanBKey) continue;
+
+    let isMatch = false;
+    if (cleanBKey === cleanP) {
+      isMatch = true;
+    } else {
+      // Substring match for sufficiently long strings
+      if (cleanP.length >= 20 && cleanBKey.length >= 20) {
+        if (cleanP.includes(cleanBKey) || cleanBKey.includes(cleanP)) {
+          const lenRatio = Math.min(cleanP.length, cleanBKey.length) / Math.max(cleanP.length, cleanBKey.length);
+          if (lenRatio >= 0.5) isMatch = true;
+        }
+      }
+      // Word overlap matching (threshold 0.55)
+      if (!isMatch && wordOverlapRatio(cleanP, cleanBKey) >= 0.55) {
+        isMatch = true;
+      }
+    }
+
+    if (isMatch) {
+      for (const ans of answers) {
+        const c = cleanText(ans);
+        if (c) badAnswers.add(c);
+      }
+    }
+  }
+
+  return Array.from(badAnswers);
+}
+
+/**
+ * Check if a candidate answer matches any blacklisted answer
+ * @param {string} ansText
+ * @param {string[]} blacklistedAnswers
+ * @returns {boolean}
+ */
+export function isAnswerBlacklisted(ansText, blacklistedAnswers) {
+  if (!ansText || !Array.isArray(blacklistedAnswers) || blacklistedAnswers.length === 0) return false;
+  const cleanA = cleanText(ansText);
+  if (!cleanA) return false;
+
+  return blacklistedAnswers.some((bad) => {
+    const cleanBad = cleanText(bad);
+    if (!cleanBad) return false;
+    if (cleanA === cleanBad) return true;
+    if (cleanA.length >= 4 && cleanBad.length >= 4) {
+      if (cleanA.includes(cleanBad) || cleanBad.includes(cleanA)) return true;
+    }
+    if (wordOverlapRatio(cleanA, cleanBad) >= 0.65) return true;
+    return false;
+  });
+}
+

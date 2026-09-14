@@ -7,53 +7,26 @@
  * 4. Automatically exit back to the overview page!
  */
 
-import { waitForSelector, sleep, safeClick, addBadge, simulateInput, simulateTyping, extendStringPrototype } from '../utils/dom.js';
+import {
+  waitForSelector,
+  sleep,
+  safeClick,
+  addBadge,
+  simulateInput,
+  simulateTyping,
+  extendStringPrototype,
+  decodeHtml,
+  cleanText,
+  wordOverlapRatio,
+  getBlacklistedAnswersForQuestion,
+  isAnswerBlacklisted,
+} from '../utils/dom.js';
 import { generateQuizAnswers, generateContent, getAISettings } from '../utils/ai.js';
 import { showToast, updateProgress } from '../ui/panel.js';
 import { getMetadata, extractItemId } from '../utils/metadata.js';
 import { apiInitiateAttempt } from '../utils/coursera-api.js';
 
 const STORAGE_KEY_QUIZ = 'cpt_auto_quiz';
-
-/**
- * Clean string for reliable comparison
- * @param {string} str
- * @returns {string}
-/**
- * Safely decode common HTML entities
- * @param {string} str
- * @returns {string}
- */
-function decodeHtml(str) {
-  if (!str || typeof str !== 'string' || !str.includes('&')) return str || '';
-  return str
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&amp;/g, '&')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&le;/g, '<=')
-    .replace(/&ge;/g, '>=')
-    .replace(/&ne;/g, '!=');
-}
-
-/**
- * Clean string for reliable comparison
- * Preserves decimal points between numbers (e.g. 10.5%) and relational operators (>=, <=, >, <, +, -)
- * @param {string} str
- * @returns {string}
- */
-function cleanText(str) {
-  if (!str) return '';
-  let text = decodeHtml(String(str));
-  return text
-    .toLowerCase()
-    .replace(/^\s*(?:question\s*\d+[\s:.-]*|\d+[.):]\s+|[a-z0-9]{1,2}[.):]\s+)/i, '') // remove "Question 1:", "10. ", "A. "
-    .replace(/(?<!\d)\.|\.(?!\d)/g, '') // remove dots that are not decimal points
-    .replace(/[,;:!?"'‘’“”`~()\[\]{}]/g, '') // remove punctuation noise, keep math: < > = + - * / % ^
-    .replace(/\s+/g, ' ')
-    .trim();
-}
 
 /**
  * Extract label text associated with an input element
@@ -204,15 +177,11 @@ export async function purgeWrongAnswersFromSource(courseSlug, blacklistMap) {
 
   let purgedCount = 0;
   const cleanedSource = existing.filter((item) => {
-    const cp = item.cleanPrompt || cleanText(item.prompt);
-    const blacklisted = blacklistMap[cp] || [];
-    if (blacklisted.length === 0) return true;
+    const p = item.cleanPrompt || item.prompt;
+    const badAnswers = getBlacklistedAnswersForQuestion(p, blacklistMap);
+    if (badAnswers.length === 0) return true;
 
-    const itemAns = cleanText(item.answer);
-    const isBad = blacklisted.some((bad) => {
-      const cBad = cleanText(bad);
-      return cBad === itemAns || (cBad.length >= 4 && itemAns.length >= 4 && (cBad.includes(itemAns) || itemAns.includes(cBad)));
-    });
+    const isBad = isAnswerBlacklisted(item.answer, badAnswers);
 
     if (isBad) {
       console.log(`[CourseraPro Smart Retake] Purging poisoned cache from Source [${slug}]: "${item.prompt}" -> "${item.answer}"`);
@@ -284,8 +253,9 @@ export async function recordQuizReviewFeedback() {
       }
     }
     promptText = promptText
-      .replace(/\b\d+\s*(?:points?|điểm)\b/gi, '')
-      .replace(/\b\d+\s*\/\s*\d+\s*(?:points?|điểm)\b/gi, '')
+      .split(/\b(?:try\s+again|this\s+should\s+not\s+be\s+selected|incorrect|correct|sai|đúng)\b/i)[0]
+      .replace(/\b\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?\s*(?:points?|pts?|điểm)?\b/gi, '')
+      .replace(/\b\d+(?:\.\d+)?\s*(?:points?|pts?|điểm)\b/gi, '')
       .replace(/^\s*(?:question\s*\d+[\s:.-]*|\d+[.):]\s+)/i, '')
       .replace(/\s+/g, ' ')
       .trim();
@@ -428,13 +398,13 @@ function findAnswerInSource(question, sourceList, blacklist = {}) {
   if (!cleanQ) return null;
 
   const hasOptions = Array.isArray(question.options) && question.options.length > 0;
-  const qBlacklist = blacklist[cleanQ] || [];
+  const badAnswers = getBlacklistedAnswersForQuestion(question.prompt, blacklist);
 
-  // Helper to verify if source answer exists in question options and not blacklisted
+  // Helper to verify if source answer exists in question options and is NOT blacklisted
   const matchesAnyOption = (ans) => {
-    const cleanA = cleanText(ans);
-    if (qBlacklist.includes(cleanA)) return false; // Rejected by Smart Retake blacklist!
+    if (isAnswerBlacklisted(ans, badAnswers)) return false; // Strictly rejected by Smart Retake blacklist!
     if (!hasOptions) return true;
+    const cleanA = cleanText(ans);
     return question.options.some((opt) => {
       const cOpt = cleanText(opt);
       return cOpt === cleanA || (cOpt.length >= 4 && (cOpt.includes(cleanA) || cleanA.includes(cOpt)));
@@ -457,6 +427,14 @@ function findAnswerInSource(question, sourceList, blacklist = {}) {
       if (ratio >= 0.75 && (cleanQ.includes(cp) || cp.includes(cleanQ))) {
         if (matchesAnyOption(item.answer)) return item;
       }
+    }
+  }
+
+  // 3. Word overlap ratio match >= 0.65
+  for (const item of sourceList) {
+    const cp = item.cleanPrompt || cleanText(item.prompt);
+    if (cp && wordOverlapRatio(cleanQ, cp) >= 0.65) {
+      if (matchesAnyOption(item.answer)) return item;
     }
   }
 
@@ -614,8 +592,8 @@ function discoverQuestions() {
 
         // Clean point labels and index numbers
         promptText = promptText
-          .replace(/\b\d+\s*(?:points?|điểm)\b/gi, '')
-          .replace(/\b\d+\s*\/\s*\d+\s*(?:points?|điểm)\b/gi, '')
+          .replace(/\b\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?\s*(?:points?|pts?|điểm)?\b/gi, '')
+          .replace(/\b\d+(?:\.\d+)?\s*(?:points?|pts?|điểm)\b/gi, '')
           .replace(/^\s*(?:question\s*\d+[\s:.-]*|\d+[.):]\s+)/i, '')
           .replace(/\s+/g, ' ')
           .trim();
@@ -696,8 +674,8 @@ async function fillDiscoveredAnswers(questions, answers, sourceMatchIndexes = ne
   for (let i = 0; i < questions.length; i++) {
     const q = questions[i];
     const cleanQ = cleanText(q.prompt);
-    const qBlacklist = blacklist[cleanQ] || [];
-    const isBlacklisted = (opt) => qBlacklist.includes(cleanText(opt?.text));
+    const qBlacklist = getBlacklistedAnswersForQuestion(q.prompt, blacklist);
+    const isBlacklisted = (opt) => isAnswerBlacklisted(opt?.text, qBlacklist);
 
     const ansObj =
       answers.find((a) => a && (a.id === i + 1 || a.id === String(i + 1))) ||
@@ -962,10 +940,9 @@ async function retrySolveSingleQuestion(question, quizBlacklist = {}) {
   if (!question || !question.options || question.options.length === 0) return false;
 
   const cleanQ = cleanText(question.prompt);
-  const qBlacklist = quizBlacklist[cleanQ] || [];
-  const validOptionItems = (question.optionItems || []).filter(
-    (opt) => !qBlacklist.includes(cleanText(opt.text))
-  );
+  const qBlacklist = getBlacklistedAnswersForQuestion(question.prompt, quizBlacklist);
+  const isBadOpt = (opt) => isAnswerBlacklisted(opt?.text, qBlacklist);
+  const validOptionItems = (question.optionItems || []).filter((opt) => !isBadOpt(opt));
 
   if (validOptionItems.length === 0) return false;
 
@@ -1012,13 +989,13 @@ ${rule}`;
         const letterMatch = part.match(/^(?:option\s+|choice\s+)?([a-z])$/i);
         if (letterMatch) {
           const idx = letterMatch[1].toLowerCase().charCodeAt(0) - 97;
-          if (question.optionItems[idx] && !qBlacklist.includes(cleanText(question.optionItems[idx].text))) {
+          if (question.optionItems[idx] && !isBadOpt(question.optionItems[idx])) {
             matchedIndices.add(idx);
           }
         }
         for (let i = 0; i < question.optionItems.length; i++) {
           const opt = question.optionItems[i];
-          if (qBlacklist.includes(cleanText(opt.text))) continue;
+          if (isBadOpt(opt)) continue;
           const cOpt = cleanText(opt.text);
           if (cOpt === part || (cOpt.length >= 4 && part.length >= 4 && (cOpt.includes(part) || part.includes(cOpt)))) {
             matchedIndices.add(i);
@@ -1030,7 +1007,7 @@ ${rule}`;
         for (let i = 0; i < question.optionItems.length; i++) {
           if (matchedIndices.size >= expectedCount) break;
           const opt = question.optionItems[i];
-          if (!qBlacklist.includes(cleanText(opt.text)) && !matchedIndices.has(i)) {
+          if (!isBadOpt(opt) && !matchedIndices.has(i)) {
             matchedIndices.add(i);
           }
         }
@@ -1055,7 +1032,7 @@ ${rule}`;
     const letterMatch = rawResult.trim().match(/^[A-Da-d]\b/);
     if (letterMatch) {
       const idx = letterMatch[0].toUpperCase().charCodeAt(0) - 65;
-      if (question.optionItems[idx] && !qBlacklist.includes(cleanText(question.optionItems[idx].text))) {
+      if (question.optionItems[idx] && !isBadOpt(question.optionItems[idx])) {
         chosenOpt = question.optionItems[idx];
       }
     }
@@ -1414,8 +1391,15 @@ export async function solveAndSubmitQuiz(outsideUrl = '') {
 
     // 2. Load Local Course Source and Smart Retake Blacklist
     const courseSlug = getCurrentCourseSlug();
-    const courseSource = await loadCourseSource(courseSlug);
     const quizBlacklist = await loadQuizBlacklist(courseSlug);
+
+    // CRITICAL: Purge poisoned wrong answers from local source cache right now before reading source!
+    const purgedCount = await purgeWrongAnswersFromSource(courseSlug, quizBlacklist);
+    if (purgedCount > 0) {
+      console.log(`[CourseraPro Smart Retake] Purged ${purgedCount} poisoned items from Source before solving.`);
+    }
+
+    const courseSource = await loadCourseSource(courseSlug);
     console.log(`[CourseraPro] Local Source for [${courseSlug}]: ${courseSource.length} questions. Blacklist has ${Object.keys(quizBlacklist).length} entries.`);
 
     const finalAnswers = new Array(questions.length);

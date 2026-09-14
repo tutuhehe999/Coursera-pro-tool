@@ -22,20 +22,103 @@ function cleanText(str) {
     .trim();
 }
 
-console.log('--- TEST 1: Purge Poisoned Cache from Local Course Source ---');
+// Import functions from utils/dom.js or define identical implementations for Node testing
+function decodeHtml(str) {
+  if (!str || typeof str !== 'string' || !str.includes('&')) return str || '';
+  return str
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&le;/g, '<=')
+    .replace(/&ge;/g, '>=')
+    .replace(/&ne;/g, '!=');
+}
+
+function wordOverlapRatio(str1, str2) {
+  if (!str1 || !str2) return 0;
+  const words1 = new Set(cleanText(str1).split(' ').filter((w) => w.length > 2));
+  const words2 = new Set(cleanText(str2).split(' ').filter((w) => w.length > 2));
+  if (words1.size === 0 || words2.size === 0) return 0;
+  let overlap = 0;
+  for (const w of words1) {
+    if (words2.has(w)) overlap++;
+  }
+  return overlap / Math.min(words1.size, words2.size);
+}
+
+function getBlacklistedAnswersForQuestion(prompt, blacklistMap = {}) {
+  if (!prompt || !blacklistMap || typeof blacklistMap !== 'object') return [];
+  const cleanP = cleanText(prompt);
+  if (!cleanP) return [];
+
+  const badAnswers = new Set();
+
+  if (Array.isArray(blacklistMap[cleanP])) {
+    for (const ans of blacklistMap[cleanP]) {
+      const c = cleanText(ans);
+      if (c) badAnswers.add(c);
+    }
+  }
+
+  for (const [bKey, answers] of Object.entries(blacklistMap)) {
+    if (!Array.isArray(answers) || answers.length === 0) continue;
+    const cleanBKey = cleanText(bKey);
+    if (!cleanBKey) continue;
+
+    let isMatch = false;
+    if (cleanBKey === cleanP) {
+      isMatch = true;
+    } else {
+      if (cleanP.length >= 20 && cleanBKey.length >= 20) {
+        if (cleanP.includes(cleanBKey) || cleanBKey.includes(cleanP)) {
+          const lenRatio = Math.min(cleanP.length, cleanBKey.length) / Math.max(cleanP.length, cleanBKey.length);
+          if (lenRatio >= 0.5) isMatch = true;
+        }
+      }
+      if (!isMatch && wordOverlapRatio(cleanP, cleanBKey) >= 0.55) {
+        isMatch = true;
+      }
+    }
+
+    if (isMatch) {
+      for (const ans of answers) {
+        const c = cleanText(ans);
+        if (c) badAnswers.add(c);
+      }
+    }
+  }
+
+  return Array.from(badAnswers);
+}
+
+function isAnswerBlacklisted(ansText, blacklistedAnswers) {
+  if (!ansText || !Array.isArray(blacklistedAnswers) || blacklistedAnswers.length === 0) return false;
+  const cleanA = cleanText(ansText);
+  if (!cleanA) return false;
+
+  return blacklistedAnswers.some((bad) => {
+    const cleanBad = cleanText(bad);
+    if (!cleanBad) return false;
+    if (cleanA === cleanBad) return true;
+    if (cleanA.length >= 4 && cleanBad.length >= 4) {
+      if (cleanA.includes(cleanBad) || cleanBad.includes(cleanA)) return true;
+    }
+    if (wordOverlapRatio(cleanA, cleanBad) >= 0.65) return true;
+    return false;
+  });
+}
+
+console.log('--- TEST 1: Purge Poisoned Cache from Local Course Source (With Prompt Variations) ---');
 
 function purgeSource(existingSource, blacklistMap) {
   return existingSource.filter((item) => {
-    const cp = item.cleanPrompt || cleanText(item.prompt);
-    const blacklisted = blacklistMap[cp] || [];
-    if (blacklisted.length === 0) return true;
+    const p = item.cleanPrompt || item.prompt;
+    const badAnswers = getBlacklistedAnswersForQuestion(p, blacklistMap);
+    if (badAnswers.length === 0) return true;
 
-    const itemAns = cleanText(item.answer);
-    const isBad = blacklisted.some((bad) => {
-      const cBad = cleanText(bad);
-      return cBad === itemAns || (cBad.length >= 4 && itemAns.length >= 4 && (cBad.includes(itemAns) || itemAns.includes(cBad)));
-    });
-
+    const isBad = isAnswerBlacklisted(item.answer, badAnswers);
     return !isBad;
   });
 }
@@ -59,22 +142,89 @@ const mockSource = [
   },
 ];
 
+// Note realistic prompt variations from Coursera review page:
+// Question numbers "1. ", point labels "0/1 point", "0/2 points", "pts"
 const mockBlacklist = {
-  [cleanText('Which of the following software development models can best respond to requirements changes?')]: [
+  [cleanText('1. Which of the following software development models can best respond to requirements changes? 0/1 point')]: [
     cleanText('The Waterfall model'),
   ],
-  [cleanText('In which of the following software development models are the software development activities performed sequentially rather than in iterations?')]: [
+  [cleanText('2. In which of the following software development models are the software development activities performed sequentially rather than in iterations? 0/1 point')]: [
     cleanText('Agile models'),
   ],
-  [cleanText('Which of the following are limitations of the waterfall model? Select three.')]: [
+  [cleanText('3. Which of the following are limitations of the waterfall model? Select three. 0/2 points')]: [
     cleanText('It is not suitable for big projects'),
   ],
 };
 
 const purged = purgeSource(mockSource, mockBlacklist);
-assert.strictEqual(purged.length, 1, 'All 3 poisoned answers must be purged from source!');
+assert.strictEqual(purged.length, 1, 'All 3 poisoned answers must be purged from source even with review page prompt differences!');
 assert.strictEqual(purged[0].prompt, 'What is Scrum?');
-console.log('✓ Poisoned cache purged cleanly from course source');
+console.log('✓ Poisoned cache purged cleanly from course source even with prompt differences');
+
+console.log('--- TEST 1b: Verify findAnswerInSource Rejects Blacklisted Answers ---');
+
+function findAnswerInSource(question, sourceList, blacklist = {}) {
+  if (!question || !sourceList || sourceList.length === 0) return null;
+  const cleanQ = cleanText(question.prompt);
+  if (!cleanQ) return null;
+
+  const hasOptions = Array.isArray(question.options) && question.options.length > 0;
+  const badAnswers = getBlacklistedAnswersForQuestion(question.prompt, blacklist);
+
+  const matchesAnyOption = (ans) => {
+    if (isAnswerBlacklisted(ans, badAnswers)) return false;
+    if (!hasOptions) return true;
+    const cleanA = cleanText(ans);
+    return question.options.some((opt) => {
+      const cOpt = cleanText(opt);
+      return cOpt === cleanA || (cOpt.length >= 4 && (cOpt.includes(cleanA) || cleanA.includes(cOpt)));
+    });
+  };
+
+  for (const item of sourceList) {
+    const cp = item.cleanPrompt || cleanText(item.prompt);
+    if (cp && cp === cleanQ) {
+      if (matchesAnyOption(item.answer)) return item;
+    }
+  }
+
+  for (const item of sourceList) {
+    const cp = item.cleanPrompt || cleanText(item.prompt);
+    if (cleanQ.length >= 25 && cp.length >= 25) {
+      const ratio = Math.min(cleanQ.length, cp.length) / Math.max(cleanQ.length, cp.length);
+      if (ratio >= 0.75 && (cleanQ.includes(cp) || cp.includes(cleanQ))) {
+        if (matchesAnyOption(item.answer)) return item;
+      }
+    }
+  }
+
+  for (const item of sourceList) {
+    const cp = item.cleanPrompt || cleanText(item.prompt);
+    if (cp && wordOverlapRatio(cleanQ, cp) >= 0.65) {
+      if (matchesAnyOption(item.answer)) return item;
+    }
+  }
+
+  return null;
+}
+
+// Attempt page question Q1 (with "1 point" suffix)
+const attemptQ1 = {
+  prompt: 'Which of the following software development models can best respond to requirements changes? 1 point',
+  options: ['The Waterfall model', 'The V-model', 'Agile models'],
+};
+
+// Even if sourceList STILL has the bad answer "The Waterfall model":
+const testSourceWithBad = [
+  {
+    prompt: 'Which of the following software development models can best respond to requirements changes?',
+    answer: 'The Waterfall model',
+  },
+];
+
+const foundQ1 = findAnswerInSource(attemptQ1, testSourceWithBad, mockBlacklist);
+assert.strictEqual(foundQ1, null, 'findAnswerInSource MUST return null for blacklisted answer "The Waterfall model"!');
+console.log('✓ findAnswerInSource strictly rejected blacklisted answer and returned null');
 
 console.log('--- TEST 2: Feedback Evaluation for Multi-Point Questions ---');
 
