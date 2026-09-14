@@ -17,7 +17,10 @@ const SAMPLE_REVIEWS = [
 
 const STORAGE_KEY_ACTIVE = 'cpt_auto_review_active';
 const STORAGE_KEY_COUNT = 'cpt_auto_review_count';
+const STORAGE_KEY_TARGET = 'cpt_auto_review_target';
+const STORAGE_KEY_ASSIGNMENT = 'cpt_auto_review_assignment';
 const MAX_CONSECUTIVE_REVIEWS = 10;
+let isExecutingReview = false;
 
 /**
  * Check if the auto review loop is currently active in session
@@ -35,7 +38,159 @@ export function isAutoReviewActive() {
 export function stopAutoReview(msg, type = 'info') {
   sessionStorage.removeItem(STORAGE_KEY_ACTIVE);
   sessionStorage.removeItem(STORAGE_KEY_COUNT);
+  sessionStorage.removeItem(STORAGE_KEY_TARGET);
+  sessionStorage.removeItem(STORAGE_KEY_ASSIGNMENT);
+  isExecutingReview = false;
   if (msg) showToast(msg, type);
+}
+
+/**
+ * Helper to check if an element is inside any navigation bar, sidebar, drawer, or course outline
+ * @param {Element} el
+ * @returns {boolean}
+ */
+export function isInsideNavigationSidebar(el) {
+  if (!el || !el.closest) return false;
+  return Boolean(
+    el.closest(
+      'nav, aside, [role="navigation"], [class*="navigation" i], [class*="drawer" i], [class*="sidebar" i], [data-testid*="navigation" i], [aria-label*="navigation" i], .rc-NavigationDrawer, .rc-CourseOutline'
+    )
+  );
+}
+
+/**
+ * Extract the base peer assignment path: /learn/:courseSlug/peer/:peerId/:assignmentSlug
+ * @param {string} [url]
+ * @returns {string}
+ */
+export function getCurrentPeerAssignmentPath(url = null) {
+  const targetUrl = url || (typeof location !== 'undefined' ? location.href : '');
+  if (!targetUrl) return '';
+  try {
+    const parsed = new URL(targetUrl, typeof location !== 'undefined' ? location.origin : 'https://www.coursera.org');
+    const m = parsed.pathname.match(/^(\/learn\/[^/]+\/peer\/[^/]+\/[^/?#]+)/i);
+    return m ? m[1] : '';
+  } catch (_e) {
+    const m = String(targetUrl).match(/(\/learn\/[^/]+\/peer\/[^/]+\/[^/?#]+)/i);
+    return m ? m[1] : '';
+  }
+}
+
+/**
+ * Check if a link href belongs to the current peer assignment
+ * @param {string} href
+ * @param {string} currentBasePath
+ * @returns {boolean}
+ */
+export function isSameAssignmentLink(href, currentBasePath) {
+  if (!href || !currentBasePath) return true;
+  try {
+    const url = new URL(href, typeof location !== 'undefined' ? location.origin : 'https://www.coursera.org');
+    if (url.pathname.includes('/peer/')) {
+      return url.pathname.startsWith(currentBasePath);
+    }
+    return true;
+  } catch (_e) {
+    return true;
+  }
+}
+
+/**
+ * Parse the number of reviews remaining to complete for this assignment
+ * @param {string} [text]
+ * @returns {number|null}
+ */
+export function getRemainingReviewsCount(text = null) {
+  const content = text !== null ? text : (document.body?.innerText || '');
+  if (!content) return null;
+
+  const lower = content.toLowerCase();
+
+  // Completion indicators
+  if (
+    lower.includes("you've finished your peer reviews") ||
+    lower.includes('you have finished your peer reviews') ||
+    lower.includes('you have reviewed all ungraded submissions') ||
+    lower.includes('all reviews complete') ||
+    lower.includes('0 left to complete') ||
+    lower.includes('0 more to complete') ||
+    lower.includes('đã hoàn thành tất cả các bài chấm') ||
+    lower.includes('0 bài cần chấm')
+  ) {
+    return 0;
+  }
+
+  // Pattern 1: "Reviews 4 left to complete" or "4 left to complete" or "4 more to complete"
+  const leftMatch = content.match(/(\d+)\s*(?:left\s*to\s*complete|more\s*to\s*complete)/i);
+  if (leftMatch) {
+    return parseInt(leftMatch[1], 10);
+  }
+
+  // Pattern 2: "Review 2 more peers to get your grade"
+  const morePeersMatch = content.match(/review\s+(\d+)\s+more\s+peers?/i);
+  if (morePeersMatch) {
+    return parseInt(morePeersMatch[1], 10);
+  }
+
+  // Pattern 3: "Reviews: 1 of 4 complete" or "1 of 4 complete"
+  const ofMatch =
+    content.match(/reviews?\s*:\s*(\d+)\s*of\s*(\d+)\s*complete/i) ||
+    content.match(/(\d+)\s*of\s*(\d+)\s*(?:reviews?\s*)?complete/i);
+  if (ofMatch) {
+    const done = parseInt(ofMatch[1], 10);
+    const required = parseInt(ofMatch[2], 10);
+    return Math.max(0, required - done);
+  }
+
+  // Pattern 4: "Review 4 or more assignment submissions to receive a grade"
+  const orMoreMatch = content.match(/review\s+(\d+)\s+or\s+more\s+assignment\s+submissions/i);
+  if (orMoreMatch) {
+    return parseInt(orMoreMatch[1], 10);
+  }
+
+  // Pattern 5: Vietnamese patterns
+  const viMatch =
+    content.match(/cần\s*chấm\s*(?:thêm\s*)?(\d+)\s*bài/i) ||
+    content.match(/còn\s*lại\s*(\d+)\s*bài/i) ||
+    content.match(/(\d+)\s*bài\s*(?:còn\s*lại|cần\s*chấm)/i);
+  if (viMatch) {
+    return parseInt(viMatch[1], 10);
+  }
+
+  return null;
+}
+
+/**
+ * Check if the requirement for peer reviews has been reached
+ * @returns {boolean}
+ */
+export function isReviewRequirementSatisfied() {
+  const target = parseInt(sessionStorage.getItem(STORAGE_KEY_TARGET) || '0', 10);
+  const count = parseInt(sessionStorage.getItem(STORAGE_KEY_COUNT) || '0', 10);
+
+  // If target has been reached
+  if (target > 0 && count >= target) {
+    return true;
+  }
+
+  // Check DOM text
+  const rem = getRemainingReviewsCount();
+  if (rem !== null && rem === 0) {
+    return true;
+  }
+
+  const bodyText = (document.body?.innerText || '').toLowerCase();
+  if (
+    bodyText.includes("you've finished your peer reviews") ||
+    bodyText.includes('you have finished your peer reviews') ||
+    bodyText.includes('you have reviewed all ungraded submissions') ||
+    bodyText.includes('0 left to complete') ||
+    bodyText.includes('0 more to complete')
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 /**
@@ -55,9 +210,31 @@ export async function handleReview() {
       return;
     }
 
-    showToast('🚀 Khởi động tự động chấm chéo Peer Review...', 'info');
+    const currentAssignment = getCurrentPeerAssignmentPath();
+    if (!currentAssignment) {
+      showToast('Vui lòng mở trang bài tập Peer Review để sử dụng tính năng này.', 'warning');
+      return;
+    }
+
+    // Parse how many reviews are currently required from page
+    const remaining = getRemainingReviewsCount();
+    if (remaining !== null && remaining === 0) {
+      showToast('🎉 Bạn đã hoàn thành đủ số lượng bài chấm chéo cho bài này!', 'success');
+      return;
+    }
+
+    const target = (remaining !== null && remaining > 0) ? remaining : 0;
+
     sessionStorage.setItem(STORAGE_KEY_ACTIVE, 'true');
     sessionStorage.setItem(STORAGE_KEY_COUNT, '0');
+    sessionStorage.setItem(STORAGE_KEY_TARGET, String(target));
+    sessionStorage.setItem(STORAGE_KEY_ASSIGNMENT, currentAssignment);
+
+    if (target > 0) {
+      showToast(`🎯 Chỉ tiêu: Cần chấm đúng ${target} bài. Bắt đầu tự động chấm...`, 'info');
+    } else {
+      showToast('🚀 Khởi động tự động chấm chéo Peer Review...', 'info');
+    }
 
     await executeReviewStep();
   } catch (error) {
@@ -71,6 +248,13 @@ export async function handleReview() {
  */
 export async function checkAndResumeAutoReview() {
   if (!isAutoReviewActive()) return;
+  if (isExecutingReview) return;
+
+  const currentBase = sessionStorage.getItem(STORAGE_KEY_ASSIGNMENT);
+  if (currentBase && !location.pathname.startsWith(currentBase)) {
+    console.warn('[CourseraPro] Auto-review prevented execution outside target assignment path:', location.pathname);
+    return;
+  }
 
   console.log('[CourseraPro] Resuming active Auto Peer Review loop on:', location.href);
   await sleep(1500);
@@ -79,18 +263,26 @@ export async function checkAndResumeAutoReview() {
 
 /**
  * Detect whether the current page is an active peer review grading / submission page
- * (Matches /review-next, /review/:id, or any page containing active rubric radio buttons)
  * @returns {boolean}
  */
 export function isSubmissionGradingPage() {
   const url = location.href.toLowerCase();
+
+  // Overview / instruction pages are NEVER grading pages
+  if (
+    url.includes('/give-feedback') ||
+    url.includes('/instructions') ||
+    url.includes('/my-submission')
+  ) {
+    return false;
+  }
 
   // Explicit review URLs (modern & classic layouts)
   if (
     url.includes('/review-next') ||
     url.includes('/review_next') ||
     url.includes('/review/') ||
-    (url.includes('/peer/') && url.includes('/review') && !url.includes('/my-submission'))
+    (url.includes('/peer/') && url.includes('/review'))
   ) {
     return true;
   }
@@ -117,165 +309,189 @@ export function isSubmissionGradingPage() {
  */
 async function executeReviewStep() {
   if (!isAutoReviewActive()) return;
+  if (isExecutingReview) return;
+  isExecutingReview = true;
 
-  const count = parseInt(sessionStorage.getItem(STORAGE_KEY_COUNT) || '0', 10);
-  if (count >= MAX_CONSECUTIVE_REVIEWS) {
-    stopAutoReview(`🎉 Đã hoàn thành liên tiếp ${count} bài chấm chéo. Tạm dừng an toàn!`, 'success');
-    return;
-  }
+  try {
+    const currentBase = sessionStorage.getItem(STORAGE_KEY_ASSIGNMENT) || getCurrentPeerAssignmentPath();
+    const count = parseInt(sessionStorage.getItem(STORAGE_KEY_COUNT) || '0', 10);
+    let target = parseInt(sessionStorage.getItem(STORAGE_KEY_TARGET) || '0', 10);
 
-  const url = location.href;
-
-  // Check if review requirement is already satisfied
-  if (isReviewRequirementSatisfied()) {
-    stopAutoReview('🎉 Đã hoàn thành đủ số lượng bài chấm chéo theo yêu cầu!', 'success');
-    return;
-  }
-
-  // CASE 1: Currently on an individual submission review / grading page (.../review-next, .../review/:id, or has Rubric)
-  if (isSubmissionGradingPage()) {
-    showToast(`📝 Đang tự động chấm bài học viên (Bài ${count + 1})...`, 'info');
-    const success = await fillRubricAndSubmit();
-
-    if (success) {
-      const newCount = count + 1;
-      sessionStorage.setItem(STORAGE_KEY_COUNT, String(newCount));
-      showToast(`✅ Đã nộp bài chấm ${newCount} thành công! Đang chuyển tiếp...`, 'success');
-      await sleep(2500);
-
-      // Check if finished requirement after this review
-      if (isReviewRequirementSatisfied()) {
-        stopAutoReview('🎉 Đã hoàn thành đủ số lượng bài chấm chéo theo yêu cầu!', 'success');
-        return;
-      }
-
-      // 1. Look for next action button on the post-submit page
-      const nextActionBtn = Array.from(document.querySelectorAll('button, a')).find((el) => {
-        if (el.closest('#cpt-panel') || el.disabled) return false;
-        const txt = (el.textContent || '').trim().toLowerCase();
-        return (
-          txt.includes('review another') ||
-          txt.includes('review next') ||
-          txt.includes('start reviewing') ||
-          txt.includes('chấm bài khác') ||
-          txt.includes('tiếp tục chấm') ||
-          txt.includes('back to peers') ||
-          txt.includes('view peers')
-        );
-      });
-
-      if (nextActionBtn) {
-        showToast('👉 Đang bấm chuyển sang bài tiếp theo...', 'info');
-        safeClick(nextActionBtn);
-        await sleep(2500);
-        await executeReviewStep();
-        return;
-      }
-
-      // 2. If a new submission loaded in-place (still on grading page with unsubmitted rubric)
-      if (isSubmissionGradingPage()) {
-        console.log('[CourseraPro] New peer review submission loaded in-place.');
-        await sleep(1500);
-        await executeReviewStep();
-        return;
-      }
-
-      // 3. Fallback: navigate back to give-feedback to continue from list
-      navigateToGiveFeedback();
-    } else {
-      console.warn('[CourseraPro] Could not submit review form on current page.');
+    // Safeguard: Verify we are still strictly on the same assignment
+    if (currentBase && !location.pathname.startsWith(currentBase)) {
+      console.warn('[CourseraPro] Not on target assignment path. Stopping loop to prevent wrong grading.', location.pathname);
+      stopAutoReview('⚠️ Đã chuyển ra ngoài bài tập hiện tại. Đã tự động dừng chấm chéo để tránh chấm nhầm bài khác.', 'warning');
+      return;
     }
-    return;
-  }
 
-  // CASE 2: Currently on the "Peers to review" overview page (.../give-feedback)
-  if (url.includes('/give-feedback')) {
-    showToast('🔍 Đang kiểm tra chỉ tiêu bài cần chấm...', 'info');
-    await sleep(1200);
+    // Attempt to discover target count if not known yet
+    if (target <= 0) {
+      const discoveredRemaining = getRemainingReviewsCount();
+      if (discoveredRemaining !== null && discoveredRemaining > 0) {
+        target = count + discoveredRemaining;
+        sessionStorage.setItem(STORAGE_KEY_TARGET, String(target));
+        console.log(`[CourseraPro] Discovered review target: ${target} (count: ${count}, remaining: ${discoveredRemaining})`);
+      }
+    }
 
+    // 1. Check if required number of reviews has been completed
+    if (target > 0 && count >= target) {
+      stopAutoReview(`🎉 Đã hoàn thành đúng chỉ tiêu ${count}/${target} bài chấm chéo! Đã dừng.`, 'success');
+      return;
+    }
+
+    // 2. Check if page indicates reviews are finished
     if (isReviewRequirementSatisfied()) {
       stopAutoReview('🎉 Đã hoàn thành đủ số lượng bài chấm chéo theo yêu cầu!', 'success');
       return;
     }
 
-    showToast('👉 Đang bấm vào bài nộp để chấm (Start Reviewing)...', 'info');
-    const opened = await pickAndOpenNextPeerCard();
+    // Safe ceiling check
+    if (count >= MAX_CONSECUTIVE_REVIEWS) {
+      stopAutoReview(`🎉 Đã hoàn thành an toàn ${count} bài chấm chéo. Tạm dừng an toàn!`, 'success');
+      return;
+    }
 
-    if (opened) {
-      showToast('🚀 Đang mở bài nộp...', 'info');
-      await sleep(2500);
-      if (isSubmissionGradingPage()) {
-        await executeReviewStep();
-      }
-    } else {
-      if (document.body.innerText.includes('reviewed all ungraded submissions')) {
-        stopAutoReview('🎉 Bạn đã hoàn thành chấm tất cả bài nộp hiện có!', 'success');
+    const url = location.href;
+
+    // CASE 1: Currently on an individual submission review / grading page (.../review-next, .../review/:id, or has Rubric)
+    if (isSubmissionGradingPage()) {
+      showToast(`📝 Đang tự động chấm bài học viên (${count + 1}${target > 0 ? '/' + target : ''})...`, 'info');
+      const success = await fillRubricAndSubmit();
+
+      if (success) {
+        const newCount = count + 1;
+        sessionStorage.setItem(STORAGE_KEY_COUNT, String(newCount));
+        showToast(`✅ Đã nộp bài chấm ${newCount}${target > 0 ? '/' + target : ''} thành công!`, 'success');
+        await sleep(2500);
+
+        // Check if finished target right after this review
+        if (target > 0 && newCount >= target) {
+          stopAutoReview(`🎉 Đã hoàn thành đúng chỉ tiêu ${newCount}/${target} bài chấm chéo! Đã dừng.`, 'success');
+          return;
+        }
+
+        if (isReviewRequirementSatisfied()) {
+          stopAutoReview('🎉 Đã hoàn thành đủ số lượng bài chấm chéo theo yêu cầu!', 'success');
+          return;
+        }
+
+        // Look for next action button on the post-submit page (strictly outside sidebar and matching current assignment)
+        const nextActionBtn = Array.from(document.querySelectorAll('button, a')).find((el) => {
+          if (el.closest('#cpt-panel') || isInsideNavigationSidebar(el) || el.disabled) return false;
+          const href = el.getAttribute('href') || el.href || '';
+          if (href && currentBase && !isSameAssignmentLink(href, currentBase)) return false;
+          const txt = (el.textContent || '').trim().toLowerCase();
+          return (
+            txt === 'review another' ||
+            txt.includes('review another') ||
+            txt === 'review next' ||
+            txt.includes('review next') ||
+            txt === 'start reviewing' ||
+            txt.includes('start reviewing') ||
+            txt.includes('chấm bài khác') ||
+            txt.includes('tiếp tục chấm')
+          );
+        });
+
+        if (nextActionBtn) {
+          showToast('👉 Đang chuyển sang bài tiếp theo...', 'info');
+          safeClick(nextActionBtn);
+          await sleep(2500);
+          isExecutingReview = false;
+          await executeReviewStep();
+          return;
+        }
+
+        // If a new submission loaded in-place
+        if (isSubmissionGradingPage()) {
+          console.log('[CourseraPro] New peer review submission loaded in-place.');
+          await sleep(1500);
+          isExecutingReview = false;
+          await executeReviewStep();
+          return;
+        }
+
+        // Fallback: navigate back to give-feedback for THIS assignment
+        navigateToGiveFeedback();
       } else {
-        stopAutoReview('Không tìm thấy bài nộp nào khả dụng để chấm tiếp.', 'info');
+        console.warn('[CourseraPro] Could not submit review form on current page.');
       }
+      return;
     }
-    return;
-  }
 
-  // CASE 3: On any other assignment tab (e.g. /submit, /instructions, or peer home)
-  if (url.includes('/peer/')) {
-    showToast('Chuyển sang tab "Peers to review"...', 'info');
-    const tabSwitched = await goToPeersToReviewTab();
-    if (!tabSwitched) {
-      navigateToGiveFeedback();
+    // CASE 2: Currently on the "Peers to review" overview page (.../give-feedback)
+    if (url.includes('/give-feedback')) {
+      showToast('🔍 Đang kiểm tra bài nộp cần chấm...', 'info');
+      await sleep(1200);
+
+      const rem = getRemainingReviewsCount();
+      if (rem !== null) {
+        if (rem === 0) {
+          stopAutoReview('🎉 Đã hoàn thành đủ số lượng bài chấm chéo theo yêu cầu!', 'success');
+          return;
+        }
+        if (target <= 0) {
+          target = count + rem;
+          sessionStorage.setItem(STORAGE_KEY_TARGET, String(target));
+        }
+      }
+
+      if (target > 0 && count >= target) {
+        stopAutoReview(`🎉 Đã hoàn thành đúng chỉ tiêu ${count}/${target} bài chấm chéo! Đã dừng.`, 'success');
+        return;
+      }
+
+      showToast(`👉 Đang bấm Start Reviewing (Bài ${count + 1}${target > 0 ? '/' + target : ''})...`, 'info');
+      const opened = await pickAndOpenNextPeerCard();
+
+      if (opened) {
+        showToast('🚀 Đang mở bài nộp...', 'info');
+        await sleep(2500);
+        if (isSubmissionGradingPage()) {
+          isExecutingReview = false;
+          await executeReviewStep();
+        }
+      } else {
+        if (document.body && document.body.innerText.includes('reviewed all ungraded submissions')) {
+          stopAutoReview('🎉 Bạn đã hoàn thành chấm tất cả bài nộp hiện có!', 'success');
+        } else {
+          stopAutoReview('Không tìm thấy bài nộp nào khả dụng để chấm tiếp.', 'info');
+        }
+      }
+      return;
     }
-    return;
+
+    // CASE 3: On any other assignment tab (e.g. /submit, /instructions, or peer home)
+    if (url.includes('/peer/')) {
+      showToast('Chuyển sang tab "Peers to review"...', 'info');
+      const tabSwitched = await goToPeersToReviewTab();
+      if (!tabSwitched) {
+        navigateToGiveFeedback();
+      }
+      return;
+    }
+
+    // CASE 4: Not on a peer assignment page at all
+    stopAutoReview('Vui lòng mở trang bài tập Peer Review để sử dụng tính năng này.', 'warning');
+  } finally {
+    isExecutingReview = false;
   }
-
-  // CASE 4: Not on a peer assignment page at all
-  stopAutoReview('Vui lòng mở trang bài tập Peer Review để sử dụng tính năng này.', 'warning');
-}
-
-/**
- * Check if the requirement for peer reviews has been reached on the /give-feedback page
- * @returns {boolean}
- */
-export function isReviewRequirementSatisfied() {
-  const bodyText = (document.body?.innerText || '').toLowerCase();
-
-  // Pattern 1: Coursera finished message (as seen in Screenshot 2)
-  if (
-    bodyText.includes("you've finished your peer reviews") ||
-    bodyText.includes('you have finished your peer reviews') ||
-    bodyText.includes('you have reviewed all ungraded submissions')
-  ) {
-    return true;
-  }
-
-  // Pattern 2: Specific review counter indicating 0 left
-  if (bodyText.includes('0 left to complete') || bodyText.includes('0 more to complete')) {
-    return true;
-  }
-
-  // Pattern 3: Review count comparison: "Reviews X complete" or "X of Y complete"
-  const countMatch =
-    bodyText.match(/reviews\s*:\s*(\d+)\s*of\s*(\d+)\s*complete/i) ||
-    bodyText.match(/(\d+)\s*of\s*(\d+)\s*(?:reviews?\s*)?complete/i);
-
-  if (countMatch && countMatch[1] && countMatch[2]) {
-    const done = parseInt(countMatch[1], 10);
-    const required = parseInt(countMatch[2], 10);
-    if (done >= required && required > 0) return true;
-  }
-
-  return false;
 }
 
 /**
  * Navigate to the "Peers to review" tab by clicking tab link or redirecting
+ * Strictly ignores any sidebar or external assignment links
  * @returns {Promise<boolean>}
  */
 async function goToPeersToReviewTab() {
   try {
-    // Look for tab with text "Peers to review"
+    const currentBase = sessionStorage.getItem(STORAGE_KEY_ASSIGNMENT) || getCurrentPeerAssignmentPath();
+
+    // Look for tab with text "Peers to review" (strictly outside navigation sidebar)
     const allTabs = Array.from(document.querySelectorAll('a, button, [role="tab"]'));
     const peersTab = allTabs.find((el) => {
-      if (el.closest('#cpt-panel')) return false;
+      if (el.closest('#cpt-panel') || isInsideNavigationSidebar(el)) return false;
       const txt = (el.textContent || '').trim().toLowerCase();
       return txt === 'peers to review' || txt.includes('peers to review');
     });
@@ -286,12 +502,14 @@ async function goToPeersToReviewTab() {
       return true;
     }
 
-    // Look for link with href containing /give-feedback
-    const gfLink = document.querySelector('a[href*="/give-feedback"]');
-    if (gfLink) {
-      safeClick(gfLink);
-      await sleep(1500);
-      return true;
+    // Look for link with href containing current assignment's give-feedback
+    if (currentBase) {
+      const gfLink = document.querySelector(`a[href*="${currentBase}/give-feedback"]`);
+      if (gfLink && !isInsideNavigationSidebar(gfLink)) {
+        safeClick(gfLink);
+        await sleep(1500);
+        return true;
+      }
     }
   } catch (_e) {}
 
@@ -299,9 +517,18 @@ async function goToPeersToReviewTab() {
 }
 
 /**
- * Fallback navigation to /give-feedback URL
+ * Navigate to /give-feedback URL strictly scoped to current assignment
  */
-function navigateToGiveFeedback() {
+export function navigateToGiveFeedback() {
+  const currentBase = sessionStorage.getItem(STORAGE_KEY_ASSIGNMENT) || getCurrentPeerAssignmentPath();
+  if (currentBase) {
+    const targetUrl = `${location.origin}${currentBase}/give-feedback`;
+    if (location.href !== targetUrl && location.pathname !== `${currentBase}/give-feedback`) {
+      location.href = targetUrl;
+      return;
+    }
+  }
+  // Fallback
   const current = location.href;
   const gfUrl = current.replace(/\/(?:submit|instructions|review.*)?$/, '/give-feedback');
   if (gfUrl !== current) {
@@ -310,18 +537,21 @@ function navigateToGiveFeedback() {
 }
 
 /**
- * Pick an unreviewed peer card from the grid on /give-feedback and click it
+ * Pick an unreviewed peer card from the grid or click Start Reviewing
+ * Strictly ignores any sidebar or external assignment links
  * @returns {Promise<boolean>}
  */
 async function pickAndOpenNextPeerCard() {
   await sleep(1500);
+  const currentBase = sessionStorage.getItem(STORAGE_KEY_ASSIGNMENT) || getCurrentPeerAssignmentPath();
 
-  // Strategy 0: Check for prominent "Start Reviewing" / "Start Review" button (as shown in user screenshot)
+  // Strategy 0: Check for prominent "Start Reviewing" / "Start Review" button
   const allButtons = Array.from(document.querySelectorAll('button, a[role="button"], a.cds-button, a'));
   const startReviewBtn = allButtons.find((btn) => {
-    if (btn.closest('#cpt-panel') || btn.disabled) return false;
+    if (btn.closest('#cpt-panel') || isInsideNavigationSidebar(btn) || btn.disabled) return false;
+    const href = btn.getAttribute('href') || btn.href || '';
+    if (href && currentBase && !isSameAssignmentLink(href, currentBase)) return false;
     const txt = (btn.textContent || '').trim().toLowerCase();
-    const href = btn.getAttribute('href') || '';
     return (
       txt === 'start reviewing' ||
       txt.includes('start reviewing') ||
@@ -342,15 +572,15 @@ async function pickAndOpenNextPeerCard() {
     return true;
   }
 
-  // Strategy 1: Find review links on page
+  // Strategy 1: Find review links on page (strictly belonging to current assignment)
   const reviewLinks = Array.from(document.querySelectorAll('a[href*="/review/"]')).filter((a) => {
-    if (a.closest('#cpt-panel')) return false;
+    if (a.closest('#cpt-panel') || isInsideNavigationSidebar(a)) return false;
     const href = a.getAttribute('href') || a.href || '';
+    if (currentBase && !isSameAssignmentLink(href, currentBase)) return false;
     return href.includes('/review/') && !href.includes('/my-submission');
   });
 
   if (reviewLinks.length > 0) {
-    // Pick the first available card
     const targetLink = reviewLinks[0];
     targetLink.scrollIntoView({ behavior: 'smooth', block: 'center' });
     await sleep(400);
@@ -362,7 +592,7 @@ async function pickAndOpenNextPeerCard() {
   const cardElements = Array.from(
     document.querySelectorAll('[data-testid*="peer" i], .cds-card, .rc-PeerReviewCard, [role="button"]')
   ).filter((el) => {
-    if (el.closest('#cpt-panel')) return false;
+    if (el.closest('#cpt-panel') || isInsideNavigationSidebar(el)) return false;
     const txt = el.textContent || '';
     return (txt.includes('ago') || txt.includes('Study') || txt.includes('Generative')) && !txt.includes('Your submission');
   });
@@ -394,7 +624,7 @@ export async function fillRubricAndSubmit() {
     // 1. Fill all Rubric ratings (Universal grouping by name or parent container)
     const allRadios = Array.from(
       document.querySelectorAll('input[type="radio"], [role="radio"]')
-    ).filter((el) => !el.closest('#cpt-panel'));
+    ).filter((el) => !el.closest('#cpt-panel') && !isInsideNavigationSidebar(el));
 
     const radioGroups = new Map();
     for (const r of allRadios) {
@@ -458,7 +688,7 @@ export async function fillRubricAndSubmit() {
       document.querySelectorAll(
         'button[aria-label*="point" i], button[aria-label*="star" i], button[role="radio"], button[aria-label*="điểm" i]'
       )
-    ).filter((el) => !el.closest('#cpt-panel'));
+    ).filter((el) => !el.closest('#cpt-panel') && !isInsideNavigationSidebar(el));
     if (ratingButtons.length > 0) {
       const bestBtn = ratingButtons[ratingButtons.length - 1];
       bestBtn.click();
@@ -471,7 +701,7 @@ export async function fillRubricAndSubmit() {
       document.querySelectorAll(
         'textarea, input[type="text"]:not([readonly]), .c-peer-review-submit-textarea-input-field, div[data-testid="peer-review-multi-line-input-field"], [contenteditable="true"]'
       )
-    ).filter((field) => !field.closest('#cpt-panel') && field.type !== 'hidden' && field.style.display !== 'none');
+    ).filter((field) => !field.closest('#cpt-panel') && !isInsideNavigationSidebar(field) && field.type !== 'hidden' && field.style.display !== 'none');
 
     const randomReview = SAMPLE_REVIEWS[Math.floor(Math.random() * SAMPLE_REVIEWS.length)];
 
@@ -497,7 +727,7 @@ export async function fillRubricAndSubmit() {
     // 3. Find and click "Submit Review" button
     const allButtons = Array.from(document.querySelectorAll('button, input[type="submit"], a[role="button"]'));
     const submitBtn = allButtons.find((btn) => {
-      if (btn.closest('#cpt-panel') || btn.disabled) return false;
+      if (btn.closest('#cpt-panel') || isInsideNavigationSidebar(btn) || btn.disabled) return false;
       const txt = (btn.textContent || btn.value || '').trim().toLowerCase();
       return (
         txt === 'submit review' ||
@@ -519,7 +749,7 @@ export async function fillRubricAndSubmit() {
       const confirmBtn = Array.from(
         document.querySelectorAll('[role="dialog"] button, .modal button, .rc-Modal button, [data-testid*="dialog" i] button')
       ).find((b) => {
-        if (b.closest('#cpt-panel')) return false;
+        if (b.closest('#cpt-panel') || isInsideNavigationSidebar(b)) return false;
         const t = (b.textContent || '').trim().toLowerCase();
         return t.includes('submit') || t.includes('confirm') || t.includes('yes') || t.includes('đồng ý');
       });

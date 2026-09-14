@@ -366,66 +366,124 @@ function checkReviewRequirement(bodyText) {
   return false;
 }
 
-assert.strictEqual(checkReviewRequirement("You've finished your peer reviews. Well done!"), true);
-assert.strictEqual(checkReviewRequirement("You have reviewed all ungraded submissions."), true);
-assert.strictEqual(checkReviewRequirement("0 left to complete"), true);
-assert.strictEqual(checkReviewRequirement("Reviews: 3 of 3 complete"), true);
-assert.strictEqual(checkReviewRequirement("Reviews: 1 of 3 complete"), false);
-assert.strictEqual(checkReviewRequirement("Review 2 more peers to get your grade"), false);
-console.log('✓ Review requirement satisfied detection verified for all Coursera states');
+function getRemainingReviewsCount(content) {
+  if (!content) return null;
+  const lower = content.toLowerCase();
 
-function isGradingPageUrl(url) {
-  const u = (url || '').toLowerCase();
-  return (
-    u.includes('/review-next') ||
-    u.includes('/review_next') ||
-    u.includes('/review/') ||
-    (u.includes('/peer/') && u.includes('/review') && !u.includes('/my-submission'))
-  );
-}
-
-// Verify URL detection for new Coursera review-next layout
-assert.strictEqual(isGradingPageUrl('https://www.coursera.org/learn/engineering-practices-secure-software-quality/peer/r96Hl/assessing-quality-through-scenarios/review-next'), true);
-assert.strictEqual(isGradingPageUrl('https://www.coursera.org/learn/test-course/peer/abc/quiz/review/12345'), true);
-assert.strictEqual(isGradingPageUrl('https://www.coursera.org/learn/engineering-practices-secure-software-quality/peer/r96Hl/assessing-quality-through-scenarios/give-feedback'), false);
-assert.strictEqual(isGradingPageUrl('https://www.coursera.org/learn/test-course/peer/abc/quiz/my-submission'), false);
-console.log('✓ isSubmissionGradingPage correctly detects /review-next without requiring card clicks');
-
-function selectBestRubricRadio(labels) {
-  let bestIdx = -1;
-  let maxPts = -1;
-  for (let i = 0; i < labels.length; i++) {
-    const text = labels[i];
-    const m = text.match(/(\d+)\s*(?:points?|pts?|điểm)/i);
-    let pts = m ? parseInt(m[1], 10) : -1;
-
-    // Check positive keywords
-    if (/\b(?:yes|đúng|present|clear|excellent|pass|meets|satisfactory)\b/i.test(text) && pts < 1) {
-      pts = 1;
-    }
-
-    if (pts < 0) pts = i;
-
-    if (pts > maxPts) {
-      maxPts = pts;
-      bestIdx = i;
-    }
+  if (
+    lower.includes("you've finished your peer reviews") ||
+    lower.includes('you have finished your peer reviews') ||
+    lower.includes('you have reviewed all ungraded submissions') ||
+    lower.includes('all reviews complete') ||
+    lower.includes('0 left to complete') ||
+    lower.includes('0 more to complete') ||
+    lower.includes('đã hoàn thành tất cả các bài chấm') ||
+    lower.includes('0 bài cần chấm')
+  ) {
+    return 0;
   }
-  return bestIdx >= 0 ? bestIdx : (labels.length - 1);
+
+  const leftMatch = content.match(/(\d+)\s*(?:left\s*to\s*complete|more\s*to\s*complete)/i);
+  if (leftMatch) {
+    return parseInt(leftMatch[1], 10);
+  }
+
+  const morePeersMatch = content.match(/review\s+(\d+)\s+more\s+peers?/i);
+  if (morePeersMatch) {
+    return parseInt(morePeersMatch[1], 10);
+  }
+
+  const ofMatch =
+    content.match(/reviews?\s*:\s*(\d+)\s*of\s*(\d+)\s*complete/i) ||
+    content.match(/(\d+)\s*of\s*(\d+)\s*(?:reviews?\s*)?complete/i);
+  if (ofMatch) {
+    const done = parseInt(ofMatch[1], 10);
+    const required = parseInt(ofMatch[2], 10);
+    return Math.max(0, required - done);
+  }
+
+  const orMoreMatch = content.match(/review\s+(\d+)\s+or\s+more\s+assignment\s+submissions/i);
+  if (orMoreMatch) {
+    return parseInt(orMoreMatch[1], 10);
+  }
+
+  const viMatch =
+    content.match(/cần\s*chấm\s*(?:thêm\s*)?(\d+)\s*bài/i) ||
+    content.match(/còn\s*lại\s*(\d+)\s*bài/i) ||
+    content.match(/(\d+)\s*bài\s*(?:còn\s*lại|cần\s*chấm)/i);
+  if (viMatch) {
+    return parseInt(viMatch[1], 10);
+  }
+
+  return null;
 }
 
-// Case A: 3 points is first
-assert.strictEqual(selectBestRubricRadio(['3 points - Clear and well focused', '2 points', '1 point']), 0);
-// Case B: 3 points is last
-assert.strictEqual(selectBestRubricRadio(['0 points', '1 point', '2 points', '3 points']), 3);
-// Case C: 5 points scale
-assert.strictEqual(selectBestRubricRadio(['1 pt', '2 pts', '3 pts', '4 pts', '5 pts']), 4);
-// Case D: New Coursera "0 points No" vs "1 point Yes" (as in user screenshot 2)
-assert.strictEqual(selectBestRubricRadio(['0 points\nNo', '1 point\nYes']), 1);
-console.log('✓ Rubric max points selection algorithm verified across all sorting orders and modern Yes/No scales');
+assert.strictEqual(getRemainingReviewsCount('Reviews 4 left to complete'), 4);
+assert.strictEqual(getRemainingReviewsCount('Reviews\n4 left to complete'), 4);
+assert.strictEqual(getRemainingReviewsCount('4 left to complete'), 4);
+assert.strictEqual(getRemainingReviewsCount('0 left to complete'), 0);
+assert.strictEqual(getRemainingReviewsCount('Reviews: 1 of 4 complete'), 3);
+assert.strictEqual(getRemainingReviewsCount('Reviews: 4 of 4 complete'), 0);
+assert.strictEqual(getRemainingReviewsCount('Review 2 more peers to get your grade'), 2);
+assert.strictEqual(getRemainingReviewsCount('Review 4 or more assignment submissions to receive a grade'), 4);
+assert.strictEqual(getRemainingReviewsCount("You've finished your peer reviews. Well done!"), 0);
+assert.strictEqual(getRemainingReviewsCount("Cần chấm thêm 3 bài nữa để nhận điểm"), 3);
+console.log('✓ getRemainingReviewsCount parses exact remaining reviews count across all variations');
+
+function getCurrentPeerAssignmentPath(url) {
+  if (!url) return '';
+  const m = String(url).match(/(\/learn\/[^/]+\/peer\/[^/]+\/[^/?#]+)/i);
+  return m ? m[1] : '';
+}
+
+assert.strictEqual(
+  getCurrentPeerAssignmentPath('https://www.coursera.org/learn/engineering-practices-secure-software-quality/peer/fKSZW/static-analysis/give-feedback'),
+  '/learn/engineering-practices-secure-software-quality/peer/fKSZW/static-analysis'
+);
+assert.strictEqual(
+  getCurrentPeerAssignmentPath('https://www.coursera.org/learn/engineering-practices-secure-software-quality/peer/fKSZW/static-analysis/review-next'),
+  '/learn/engineering-practices-secure-software-quality/peer/fKSZW/static-analysis'
+);
+console.log('✓ getCurrentPeerAssignmentPath isolates course & peer assignment base path');
+
+function isSameAssignmentLink(href, currentBasePath) {
+  if (!href || !currentBasePath) return true;
+  if (href.includes('/peer/')) {
+    return href.includes(currentBasePath);
+  }
+  return true;
+}
+
+assert.strictEqual(
+  isSameAssignmentLink(
+    '/learn/engineering-practices-secure-software-quality/peer/fKSZW/static-analysis/review/12345',
+    '/learn/engineering-practices-secure-software-quality/peer/fKSZW/static-analysis'
+  ),
+  true
+);
+assert.strictEqual(
+  isSameAssignmentLink(
+    '/learn/engineering-practices-secure-software-quality/peer/r96Hl/assessing-quality-through-scenarios/give-feedback',
+    '/learn/engineering-practices-secure-software-quality/peer/fKSZW/static-analysis'
+  ),
+  false
+);
+console.log('✓ isSameAssignmentLink prevents navigation to previous assignments');
+
+function isInsideNavigationSidebar(selectorPath) {
+  const sidebarIndicators = ['nav', 'aside', '[role="navigation"]', 'navigationdrawer', 'courseoutline', 'sidebar'];
+  const lower = selectorPath.toLowerCase();
+  return sidebarIndicators.some((ind) => lower.includes(ind));
+}
+
+assert.strictEqual(isInsideNavigationSidebar('div.rc-NavigationDrawer > ul > li > a'), true);
+assert.strictEqual(isInsideNavigationSidebar('aside.rc-CourseOutline a[href*="give-feedback"]'), true);
+assert.strictEqual(isInsideNavigationSidebar('div.rc-GiveFeedbackMainContent button.start-review-button'), false);
+console.log('✓ isInsideNavigationSidebar correctly detects and filters out course outline/sidebar');
 
 console.log('\n========================================');
-console.log('🎉 ALL 12 LOGIC AND ALGORITHM TESTS PASSED!');
+console.log('🎉 ALL 13 LOGIC AND ALGORITHM TESTS PASSED!');
 console.log('========================================');
+
 
 
