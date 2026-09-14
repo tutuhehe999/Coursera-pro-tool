@@ -794,17 +794,17 @@ Your task is to provide the accurate, correct answer for each question.
 
 CRITICAL RULES:
 1. For single choice questions, your answer MUST match the EXACT character string of the correct choice.
-2. For multiple choice / "Check all that apply" questions, provide ALL correct options separated by a pipe character '|' (e.g. "First option|Second option").
+2. For multiple choice / "Check all that apply" / "Select three" questions, you MUST provide ALL correct options separated by a pipe character '|' (e.g. "First option|Second option|Third option"). You must never pick just one option for a multi-select question!
 3. For open-ended, reflection, or short-answer essay questions (where no options are listed), write a high-quality, professional academic paragraph (about 60-120 words) directly answering the prompt.
 4. Return a valid JSON array containing one object per question in exact question order:
 [
   { "id": 1, "answer": "Exact text of correct choice" },
-  { "id": 2, "answer": "First option|Second option" },
+  { "id": 2, "answer": "First option|Second option|Third option" },
   { "id": 3, "answer": "High quality concise academic answer..." }
 ]
 5. Do NOT include markdown commentary. Return only the JSON array.`;
 
-  // Format clearly for the LLM, injecting blacklist warnings if available
+  // Format clearly for the LLM, injecting blacklist warnings and question types
   const formattedPrompt = questions
     .map((q, idx) => {
       const qId = q.id !== undefined ? q.id : idx + 1;
@@ -816,6 +816,23 @@ CRITICAL RULES:
       let item = `Question ${qId}: ${promptText}`;
       if (optionsList.length > 0) {
         item += `\nOptions:\n` + optionsList.map((opt, oIdx) => `  ${String.fromCharCode(65 + oIdx)}. ${opt}`).join('\n');
+      }
+
+      // Check if question is multi-select / checkbox
+      const isCheckbox = q.type === 'checkbox' ||
+        /\b(?:select\s+(?:all|two|three|four|five|\d+)|check\s+all|choose\s+(?:all|two|three|four|five|\d+)|multiple\s+answers?)\b/i.test(promptText);
+
+      if (isCheckbox) {
+        let countNote = '';
+        const countMatch = promptText.match(/\b(?:select|choose)\s+(two|three|four|five|\d+)\b/i);
+        if (countMatch) {
+          const wordMap = { two: 2, three: 3, four: 4, five: 5 };
+          const c = wordMap[countMatch[1].toLowerCase()] || parseInt(countMatch[1], 10);
+          if (c > 1) countNote = ` (EXACTLY ${c} OPTIONS REQUIRED)`;
+        }
+        item += `\n[QUESTION TYPE: MULTI-SELECT CHECKBOX${countNote} - You MUST select ALL required options and join them with a pipe '|'. Example: "Option 1|Option 2|Option 3"]`;
+      } else if (optionsList.length > 0) {
+        item += `\n[QUESTION TYPE: SINGLE CHOICE RADIO - Select EXACTLY ONE correct option.]`;
       }
 
       // Check Smart Retake blacklist
@@ -866,7 +883,16 @@ CRITICAL RULES:
 
   if (Array.isArray(parsed) && parsed.length > 0) {
     return parsed.map((item, idx) => {
-      const ans = typeof item === 'string' ? item : (item.answer || item.definition || item.text || '');
+      let ans = '';
+      if (typeof item === 'string') {
+        ans = item;
+      } else if (Array.isArray(item?.answer)) {
+        ans = item.answer.join('|');
+      } else if (Array.isArray(item?.definition)) {
+        ans = item.definition.join('|');
+      } else {
+        ans = String(item?.answer || item?.definition || item?.text || '');
+      }
       const assignedId = item.id !== undefined ? Number(item.id) : (questions[idx]?.id !== undefined ? questions[idx].id : idx + 1);
       return {
         id: assignedId,
@@ -2917,6 +2943,67 @@ async function saveQuizBlacklist(courseSlug, blacklistMap) {
 }
 
 /**
+ * Purge blacklisted incorrect answers from local course source to prevent retake cache poisoning
+ * @param {string} courseSlug
+ * @param {Record<string, string[]>} blacklistMap
+ * @returns {Promise<number>} Number of bad items purged
+ */
+async function purgeWrongAnswersFromSource(courseSlug, blacklistMap) {
+  if (!blacklistMap || Object.keys(blacklistMap).length === 0) return 0;
+  const slug = courseSlug || getCurrentCourseSlug();
+  const key = `${SOURCE_KEY_PREFIX}${slug}`;
+  const existing = await loadCourseSource(slug);
+  if (!existing || existing.length === 0) return 0;
+
+  let purgedCount = 0;
+  const cleanedSource = existing.filter((item) => {
+    const cp = item.cleanPrompt || cleanText(item.prompt);
+    const blacklisted = blacklistMap[cp] || [];
+    if (blacklisted.length === 0) return true;
+
+    const itemAns = cleanText(item.answer);
+    const isBad = blacklisted.some((bad) => {
+      const cBad = cleanText(bad);
+      return cBad === itemAns || (cBad.length >= 4 && itemAns.length >= 4 && (cBad.includes(itemAns) || itemAns.includes(cBad)));
+    });
+
+    if (isBad) {
+      console.log(`[CourseraPro Smart Retake] Purging poisoned cache from Source [${slug}]: "${item.prompt}" -> "${item.answer}"`);
+      purgedCount++;
+      return false;
+    }
+    return true;
+  });
+
+  if (purgedCount > 0) {
+    await chrome.storage.local.set({ [key]: cleanedSource });
+    console.log(`[CourseraPro Smart Retake] Cleaned ${purgedCount} poisoned items from Local Source.`);
+  }
+  return purgedCount;
+}
+
+/**
+ * Extract clean option text from a feedback review element, stripping out feedback banners, errors, and badges
+ * @param {Element} element
+ * @returns {string}
+ */
+function extractCleanFeedbackOptionLabel(element) {
+  if (!element) return '';
+  const clone = element.cloneNode(true);
+  clone.querySelectorAll(
+    'input, .cpt-badge, svg, [aria-hidden="true"], .sr-only, ' +
+    '.rc-FormPartsQuestion__error, .rc-FormPartsQuestion__success, ' +
+    '[data-testid*="feedback" i], [class*="feedback" i], [class*="Feedback" i], ' +
+    '[class*="callout" i], [class*="Callout" i], [role="alert"], [class*="css-1m4z3k7"]'
+  ).forEach((el) => el.remove());
+
+  let raw = clone.textContent?.trim() || '';
+  // Split on feedback markers that Coursera attaches
+  raw = raw.split(/\b(?:try\s+again|this\s+should\s+not\s+be\s+selected|this\s+should\s+be\s+selected|incorrect|correct|sai|đúng)\b/i)[0].trim();
+  return raw;
+}
+
+/**
  * Scan post-quiz review / results page, record wrong answers to blacklist and correct answers to Source
  * @returns {Promise<{wrongRecorded: number, correctRecorded: number}>}
  */
@@ -2928,7 +3015,7 @@ async function recordQuizReviewFeedback() {
   let correctRecorded = 0;
 
   const questionBlocks = document.querySelectorAll(
-    '.rc-FormPartsQuestion, fieldset, [data-testid*="question" i], [class*="QuizQuestion"]'
+    '.rc-FormPartsQuestion, fieldset, [data-testid*="question" i], [class*="QuizQuestion" i], [class*="FormPartsQuestion" i], [class*="QuestionPart" i]'
   );
 
   questionBlocks.forEach((block) => {
@@ -2960,29 +3047,74 @@ async function recordQuizReviewFeedback() {
     const cp = cleanText(rawPrompt);
     if (!cp) return;
 
-    const blockText = block.textContent || '';
-    const isError =
-      block.querySelector('.rc-FormPartsQuestion__error') ||
-      block.querySelector('[data-testid="test-feedback-incorrect"]') ||
-      block.querySelector('[aria-label*="Incorrect" i]') ||
-      block.querySelector('.css-1m4z3k7') ||
-      /\b(?:0\s*\/\s*1\s*point|incorrect|sai|0\s*điểm)\b/i.test(blockText);
+    const blockText = block.innerText || block.textContent || '';
 
-    const isSuccess =
-      block.querySelector('.rc-FormPartsQuestion__success') ||
-      block.querySelector('[data-testid="test-feedback-correct"]') ||
-      block.querySelector('[aria-label*="Correct" i]') ||
-      /\b(?:1\s*\/\s*1\s*point|correct|đúng|1\s*điểm)\b/i.test(blockText);
+    // Error & Success evaluation
+    let isError = false;
+    let isSuccess = false;
 
+    // Check points e.g. "0/1 point", "0/2 points", "1/1 point", "2/2 points", "0/3 points"
+    const scoreMatch = blockText.match(/\b(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)\s*(?:points?|điểm)?/i);
+    if (scoreMatch) {
+      const earned = parseFloat(scoreMatch[1]);
+      const total = parseFloat(scoreMatch[2]);
+      if (total > 0) {
+        if (earned === total) {
+          isSuccess = true;
+        } else if (earned < total) {
+          isError = true;
+        }
+      }
+    }
+
+    if (
+      block.querySelector('.rc-FormPartsQuestion__error, [data-testid="test-feedback-incorrect"], [aria-label*="Incorrect" i], .css-1m4z3k7') ||
+      /\b(?:try\s+again|this\s+should\s+not\s+be\s+selected|incorrect|sai|0\s*điểm)\b/i.test(blockText)
+    ) {
+      isError = true;
+      isSuccess = false;
+    }
+
+    if (!isError && (
+      block.querySelector('.rc-FormPartsQuestion__success, [data-testid="test-feedback-correct"], [aria-label*="Correct" i]') ||
+      /\b(?:correct|đúng|100%)\b/i.test(blockText)
+    )) {
+      isSuccess = true;
+    }
+
+    // 1. Check individual option items for explicit "This should not be selected" or "This should be selected"
+    const optionContainers = block.querySelectorAll('.rc-Option, [class*="option" i], label, .rc-FormPartsOption');
+    optionContainers.forEach((container) => {
+      const cText = container.innerText || container.textContent || '';
+      if (/\b(?:this\s+should\s+not\s+be\s+selected|should\s+not\s+be\s+selected)\b/i.test(cText)) {
+        const cleanOpt = cleanText(extractCleanFeedbackOptionLabel(container));
+        if (cleanOpt) {
+          if (!blacklist[cp]) blacklist[cp] = [];
+          if (!blacklist[cp].includes(cleanOpt)) {
+            blacklist[cp].push(cleanOpt);
+            wrongRecorded++;
+          }
+        }
+      } else if (/\b(?:this\s+should\s+be\s+selected|should\s+be\s+selected)\b/i.test(cText)) {
+        const cleanOpt = cleanText(extractCleanFeedbackOptionLabel(container));
+        if (cleanOpt) {
+          correctToSave.push({ prompt: rawPrompt, answer: cleanOpt });
+          correctRecorded++;
+        }
+      }
+    });
+
+    // 2. Extract selected/checked answers from inputs and option wrappers
     const selectedOptionsText = [];
     const checkedInputs = block.querySelectorAll('input:checked, [aria-checked="true"]');
     if (checkedInputs && checkedInputs.length > 0) {
       checkedInputs.forEach(inp => {
-        selectedOptionsText.push(extractOptionLabel(inp));
+        const label = inp.closest('label') || inp.parentElement || inp;
+        const txt = extractCleanFeedbackOptionLabel(label) || extractOptionLabel(inp);
+        if (txt) selectedOptionsText.push(txt);
       });
     } else {
-      // Fallback for read-only review pages where inputs might be removed or locked
-      const optionContainers = block.querySelectorAll('.rc-Option, [class*="option" i], label, .rc-FormPartsOption');
+      // Fallback for read-only review pages where inputs might be disabled or rendered without input tags
       for (const container of optionContainers) {
         const isSelected = 
           container.className.includes('selected') || 
@@ -2992,11 +3124,8 @@ async function recordQuizReviewFeedback() {
           (container.nextElementSibling && container.nextElementSibling.className && container.nextElementSibling.className.includes('error'));
           
         if (isSelected) {
-          const clone = container.cloneNode(true);
-          // Remove feedback icons/text so they don't pollute the extracted answer text
-          const feedbackEls = clone.querySelectorAll('.rc-FormPartsQuestion__error, .rc-FormPartsQuestion__success, [data-testid*="feedback"]');
-          feedbackEls.forEach(el => el.remove());
-          selectedOptionsText.push(clone.textContent.trim());
+          const txt = extractCleanFeedbackOptionLabel(container);
+          if (txt) selectedOptionsText.push(txt);
         }
       }
     }
@@ -3013,7 +3142,7 @@ async function recordQuizReviewFeedback() {
       } else if (isSuccess) {
         correctToSave.push({
           prompt: rawPrompt,
-          answer: cleanChecked, // using cleaned text for consistency
+          answer: cleanChecked,
         });
         correctRecorded++;
       }
@@ -3022,6 +3151,8 @@ async function recordQuizReviewFeedback() {
 
   if (wrongRecorded > 0) {
     await saveQuizBlacklist(courseSlug, blacklist);
+    // Purge poisoned wrong answers from local source cache so retake never picks old wrong answers!
+    await purgeWrongAnswersFromSource(courseSlug, blacklist);
   }
 
   if (correctToSave.length > 0) {
@@ -3327,11 +3458,17 @@ async function fillDiscoveredAnswers(questions, answers, sourceMatchIndexes = ne
 
     if (!ansObj) continue;
 
-    const answerDef = (
-      typeof ansObj === 'string'
-        ? ansObj
-        : (ansObj.definition || ansObj.answer || ansObj.text || '')
-    ).trim();
+    let answerDef = '';
+    if (typeof ansObj === 'string') {
+      answerDef = ansObj;
+    } else if (Array.isArray(ansObj?.answer)) {
+      answerDef = ansObj.answer.join('|');
+    } else if (Array.isArray(ansObj?.definition)) {
+      answerDef = ansObj.definition.join('|');
+    } else {
+      answerDef = String(ansObj?.definition || ansObj?.answer || ansObj?.text || '');
+    }
+    answerDef = answerDef.trim();
 
     if (!answerDef) continue;
     const cleanAns = cleanText(answerDef);
@@ -3406,32 +3543,115 @@ async function fillDiscoveredAnswers(questions, answers, sourceMatchIndexes = ne
       }
     } else if (q.type === 'checkbox') {
       // Multiple choice: split into targets
-      const parts = answerDef.split(/[|\n;]/).map((p) => cleanText(p)).filter(Boolean);
-      if (parts.length === 0 && cleanAns) parts.push(cleanAns);
+      let rawParts = [];
+      if (Array.isArray(ansObj?.answer)) {
+        rawParts = ansObj.answer;
+      } else if (Array.isArray(ansObj?.definition)) {
+        rawParts = ansObj.definition;
+      } else if (answerDef.includes('|') || answerDef.includes('\n') || answerDef.includes(';')) {
+        rawParts = answerDef.split(/[|\n;]/);
+      } else if (/\b[A-Da-d](?:\s*,\s*[A-Da-d])+\b/.test(answerDef)) {
+        rawParts = answerDef.split(/\s*,\s*/);
+      } else {
+        rawParts = [answerDef];
+      }
 
-      for (const part of parts) {
+      const cleanParts = rawParts.map((p) => cleanText(p)).filter(Boolean);
+      if (cleanParts.length === 0 && cleanAns) cleanParts.push(cleanAns);
+
+      const matchedOptionIndices = new Set();
+
+      for (const part of cleanParts) {
+        // Check single letter
+        const letterMatch = part.match(/^(?:option\s+|choice\s+)?([a-z])$/i);
+        if (letterMatch) {
+          const letterIdx = letterMatch[1].toLowerCase().charCodeAt(0) - 97;
+          if (q.optionItems[letterIdx] && !isBlacklisted(q.optionItems[letterIdx])) {
+            matchedOptionIndices.add(letterIdx);
+            continue;
+          }
+        }
+
+        // Priority 1: Exact cleaned match
         let partMatched = false;
-        // Priority 1: Exact match
-        for (const opt of q.optionItems) {
+        for (let oIdx = 0; oIdx < q.optionItems.length; oIdx++) {
+          const opt = q.optionItems[oIdx];
           const cOpt = cleanText(opt.text);
           if (cOpt === part && !isBlacklisted(opt)) {
-            const wrapper = opt.input.closest('label') || opt.input.parentElement || opt.input;
-            selectOptionElement(opt.input, wrapper, badgeLabel);
+            matchedOptionIndices.add(oIdx);
             partMatched = true;
-            questionFilled = true;
+            break;
           }
         }
 
         // Priority 2: Substring match
         if (!partMatched) {
-          for (const opt of q.optionItems) {
+          for (let oIdx = 0; oIdx < q.optionItems.length; oIdx++) {
+            const opt = q.optionItems[oIdx];
             const cOpt = cleanText(opt.text);
             if (cOpt.length >= 4 && part.length >= 4 && (cOpt.includes(part) || part.includes(cOpt)) && !isBlacklisted(opt)) {
-              const wrapper = opt.input.closest('label') || opt.input.parentElement || opt.input;
-              selectOptionElement(opt.input, wrapper, badgeLabel);
-              questionFilled = true;
+              matchedOptionIndices.add(oIdx);
+              partMatched = true;
+              break;
             }
           }
+        }
+
+        // Priority 3: Word overlap scoring
+        if (!partMatched) {
+          let bestScore = 0;
+          let bestIdx = -1;
+          const partWords = new Set(part.split(' ').filter((w) => w.length > 2));
+          for (let oIdx = 0; oIdx < q.optionItems.length; oIdx++) {
+            const opt = q.optionItems[oIdx];
+            if (isBlacklisted(opt)) continue;
+            const cOpt = cleanText(opt.text);
+            const optWords = cOpt.split(' ').filter((w) => w.length > 2);
+            let overlap = 0;
+            for (const w of optWords) {
+              if (partWords.has(w)) overlap++;
+            }
+            const score = optWords.length > 0 ? overlap / Math.max(partWords.size, optWords.length) : 0;
+            if (score > bestScore && score > 0.35) {
+              bestScore = score;
+              bestIdx = oIdx;
+            }
+          }
+          if (bestIdx >= 0) {
+            matchedOptionIndices.add(bestIdx);
+            partMatched = true;
+          }
+        }
+      }
+
+      // Check expected count from prompt (e.g. "Select three", "Select 3", "Select two")
+      const countMatch = q.prompt.match(/\b(?:select|choose)\s+(two|three|four|five|\d+)\b/i);
+      let expectedCount = 0;
+      if (countMatch) {
+        const wordMap = { two: 2, three: 3, four: 4, five: 5 };
+        expectedCount = wordMap[countMatch[1].toLowerCase()] || parseInt(countMatch[1], 10) || 0;
+      }
+
+      // If prompt specifically requires N options and we matched fewer than N,
+      // select additional non-blacklisted options to meet the required count!
+      if (expectedCount > 0 && matchedOptionIndices.size < expectedCount) {
+        for (let oIdx = 0; oIdx < q.optionItems.length; oIdx++) {
+          if (matchedOptionIndices.size >= expectedCount) break;
+          const opt = q.optionItems[oIdx];
+          if (!isBlacklisted(opt) && !matchedOptionIndices.has(oIdx)) {
+            console.log(`[CourseraPro] Auto-selecting required option ${oIdx + 1} to meet prompt requirement (${expectedCount} options)`);
+            matchedOptionIndices.add(oIdx);
+          }
+        }
+      }
+
+      // Apply selection to all matched checkboxes
+      for (const idx of matchedOptionIndices) {
+        const opt = q.optionItems[idx];
+        if (opt) {
+          const wrapper = opt.input.closest('label') || opt.input.parentElement || opt.input;
+          selectOptionElement(opt.input, wrapper, badgeLabel);
+          questionFilled = true;
         }
       }
     } else if (q.type === 'text') {
@@ -3502,23 +3722,85 @@ async function retrySolveSingleQuestion(question, quizBlacklist = {}) {
 
   if (validOptionItems.length === 0) return false;
 
+  const isCheckbox = question.type === 'checkbox' ||
+    /\b(?:select\s+(?:all|two|three|four|five|\d+)|check\s+all|choose\s+(?:all|two|three|four|five|\d+)|multiple\s+answers?)\b/i.test(question.prompt);
+
+  const countMatch = question.prompt.match(/\b(?:select|choose)\s+(two|three|four|five|\d+)\b/i);
+  let expectedCount = 0;
+  if (countMatch) {
+    const wordMap = { two: 2, three: 3, four: 4, five: 5 };
+    expectedCount = wordMap[countMatch[1].toLowerCase()] || parseInt(countMatch[1], 10) || 0;
+  }
+
+  const countNote = expectedCount > 1 ? ` (EXACTLY ${expectedCount} OPTIONS REQUIRED)` : '';
+  const rule = isCheckbox
+    ? `CRITICAL RULE: This is a MULTI-SELECT CHECKBOX question${countNote}. Respond with ALL correct option texts or letters separated by a pipe character '|' (e.g. "A|B|C" or "Option 1|Option 2"). Do NOT return just 1 choice!`
+    : `CRITICAL RULE: Respond with ONLY the exact text of the correct choice or its letter (A, B, C, or D). Do not add any explanation or preamble.`;
+
   const prompt = `Solve this university exam question accurately:
 Question: ${question.prompt}
 
 Options:
 ${question.options.map((opt, i) => `${String.fromCharCode(65 + i)}. ${opt}`).join('\n')}
 
-CRITICAL RULE: Respond with ONLY the exact text of the correct choice or its letter (A, B, C, or D). Do not add any explanation or preamble.`;
+${rule}`;
 
   try {
     const rawResult = await generateContent(
       prompt,
-      'You are a university exam expert. Provide only the single best answer option text or letter.',
+      isCheckbox
+        ? 'You are a university exam expert. Provide ALL correct options separated by "|" for multi-select questions.'
+        : 'You are a university exam expert. Provide only the single best answer option text or letter.',
       null,
       { temperature: 0.1 }
     );
 
     if (!rawResult || typeof rawResult !== 'string') return false;
+
+    if (isCheckbox) {
+      const parts = rawResult.split(/[|\n;]/).map(p => cleanText(p)).filter(Boolean);
+      const matchedIndices = new Set();
+
+      for (const part of parts) {
+        const letterMatch = part.match(/^(?:option\s+|choice\s+)?([a-z])$/i);
+        if (letterMatch) {
+          const idx = letterMatch[1].toLowerCase().charCodeAt(0) - 97;
+          if (question.optionItems[idx] && !qBlacklist.includes(cleanText(question.optionItems[idx].text))) {
+            matchedIndices.add(idx);
+          }
+        }
+        for (let i = 0; i < question.optionItems.length; i++) {
+          const opt = question.optionItems[i];
+          if (qBlacklist.includes(cleanText(opt.text))) continue;
+          const cOpt = cleanText(opt.text);
+          if (cOpt === part || (cOpt.length >= 4 && part.length >= 4 && (cOpt.includes(part) || part.includes(cOpt)))) {
+            matchedIndices.add(i);
+          }
+        }
+      }
+
+      if (expectedCount > 0 && matchedIndices.size < expectedCount) {
+        for (let i = 0; i < question.optionItems.length; i++) {
+          if (matchedIndices.size >= expectedCount) break;
+          const opt = question.optionItems[i];
+          if (!qBlacklist.includes(cleanText(opt.text)) && !matchedIndices.has(i)) {
+            matchedIndices.add(i);
+          }
+        }
+      }
+
+      let checkedAny = false;
+      for (const idx of matchedIndices) {
+        const opt = question.optionItems[idx];
+        if (opt) {
+          const wrapper = opt.input.closest('label') || opt.input.parentElement || opt.input;
+          selectOptionElement(opt.input, wrapper, '🤖 AI');
+          checkedAny = true;
+        }
+      }
+      return checkedAny;
+    }
+
     const cleanRes = cleanText(rawResult);
     let chosenOpt = null;
 
@@ -3954,18 +4236,23 @@ async function solveAndSubmitQuiz(outsideUrl = '') {
           showToast(`⚠️ AI lỗi, nhưng đã điền ${sourceCount} câu từ Source của bạn!`, 'warning');
         }
       } else {
-        const newlySolvedToSave = [];
-
         for (let j = 0; j < missingForAI.length; j++) {
           const item = missingForAI[j];
           const aiAns =
             aiAnswers.find((a) => a && (a.id === item.id || a.id === String(item.id))) ||
             aiAnswers[j];
-          const ansText = (
-            typeof aiAns === 'string'
-              ? aiAns
-              : (aiAns?.answer || aiAns?.definition || '')
-          ).trim();
+
+          let ansText = '';
+          if (typeof aiAns === 'string') {
+            ansText = aiAns;
+          } else if (Array.isArray(aiAns?.answer)) {
+            ansText = aiAns.answer.join('|');
+          } else if (Array.isArray(aiAns?.definition)) {
+            ansText = aiAns.definition.join('|');
+          } else {
+            ansText = String(aiAns?.answer || aiAns?.definition || '');
+          }
+          ansText = ansText.trim();
 
           if (ansText) {
             finalAnswers[item.originalIndex] = {
@@ -3976,29 +4263,7 @@ async function solveAndSubmitQuiz(outsideUrl = '') {
               fromAI: true,
             };
             aiCount++;
-
-            // Verify answer matches at least one option to avoid cache poisoning
-            const isMultipleChoice = Array.isArray(item.options) && item.options.length > 0;
-            const cleanA = cleanText(ansText);
-            const isValidOption = !isMultipleChoice || item.options.some((opt) => {
-              const cOpt = cleanText(opt);
-              return cOpt === cleanA || (cOpt.length >= 4 && (cOpt.includes(cleanA) || cleanA.includes(cOpt)));
-            });
-
-            if (isValidOption) {
-              newlySolvedToSave.push({
-                prompt: item.prompt,
-                answer: ansText,
-                options: item.options,
-              });
-            }
           }
-        }
-
-        // 4. Automatically save newly solved questions into Local Source!
-        if (newlySolvedToSave.length > 0) {
-          const totalInSource = await saveToCourseSource(courseSlug, newlySolvedToSave);
-          console.log(`[CourseraPro] Local Source updated! Total in [${courseSlug}]: ${totalInSource} questions`);
         }
       }
     }
@@ -4102,7 +4367,11 @@ async function solveAndSubmitQuiz(outsideUrl = '') {
 async function handleAutoQuiz() {
   try {
     // Check if on Review / Feedback results page
-    const isReviewPage = location.href.includes('/review') || Boolean(document.querySelector('.rc-FormPartsQuestion__error, [data-testid="test-feedback-incorrect"]'));
+    const isReviewPage =
+      location.href.includes('/review') ||
+      location.href.includes('/view-feedback') ||
+      Boolean(document.querySelector('.rc-FormPartsQuestion__error, [data-testid="test-feedback-incorrect"], [data-testid*="feedback" i]'));
+
     if (isReviewPage) {
       showToast('🎯 Smart Retake: Đang phân tích kết quả bài thi để lưu câu đúng và loại trừ câu sai...', 'info');
       const stats = await recordQuizReviewFeedback();
@@ -4110,7 +4379,7 @@ async function handleAutoQuiz() {
 
       const enterBtn = findQuizEnterButton();
       if (enterBtn) {
-        showToast('🎯 Đã lưu bài học! Đang bấm "Try Again" / Làm lại để đạt 100%...', 'success');
+        showToast('🎯 Đã lưu bài học! Đang bấm "Resume" / "Try Again" để làm lại...', 'success');
         await sleep(1000);
         safeClick(enterBtn);
         await autoClickStartModal();
@@ -6262,8 +6531,8 @@ async function checkAndResumeCourseAutopilot() {
       return;
     }
 
-    // If currently on /review feedback page: advance to next quiz
-    if (location.href.includes('/review')) {
+    // If currently on /review or /view-feedback page: advance to next quiz
+    if (location.href.includes('/review') || location.href.includes('/view-feedback')) {
       await sleep(2000);
       await advanceAutopilotQuizQueue(queue);
       return;
@@ -6669,10 +6938,14 @@ let lastRecordedReviewUrl = '';
  * Passively monitor for quiz review pages and record feedback in the background
  */
 function checkAndRecordReviewFeedback() {
-  const isReviewPage = location.href.includes('/review') || Boolean(document.querySelector('.rc-FormPartsQuestion__error, [data-testid="test-feedback-incorrect"]'));
+  const isReviewPage =
+    location.href.includes('/review') ||
+    location.href.includes('/view-feedback') ||
+    Boolean(document.querySelector('.rc-FormPartsQuestion__error, [data-testid="test-feedback-incorrect"], [data-testid*="feedback" i]'));
+
   if (isReviewPage && location.href !== lastRecordedReviewUrl) {
     lastRecordedReviewUrl = location.href;
-    console.log('[CourseraPro] Auto-detect review page. Passively recording feedback...');
+    console.log('[CourseraPro] Auto-detect review / feedback page. Passively recording feedback...');
     // Give DOM a moment to fully render
     setTimeout(() => {
       recordQuizReviewFeedback().catch(e => console.warn('[CourseraPro] Passive record error:', e));

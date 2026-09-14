@@ -251,8 +251,8 @@ export async function checkAndResumeCourseAutopilot() {
       return;
     }
 
-    // If currently on /review feedback page: advance to next quiz
-    if (location.href.includes('/review')) {
+    // If currently on /review or /view-feedback page: advance to next quiz
+    if (location.href.includes('/review') || location.href.includes('/view-feedback')) {
       await sleep(2000);
       await advanceAutopilotQuizQueue(queue);
       return;

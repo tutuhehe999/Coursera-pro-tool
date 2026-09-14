@@ -152,10 +152,14 @@ let lastRecordedReviewUrl = '';
  * Passively monitor for quiz review pages and record feedback in the background
  */
 function checkAndRecordReviewFeedback() {
-  const isReviewPage = location.href.includes('/review') || Boolean(document.querySelector('.rc-FormPartsQuestion__error, [data-testid="test-feedback-incorrect"]'));
+  const isReviewPage =
+    location.href.includes('/review') ||
+    location.href.includes('/view-feedback') ||
+    Boolean(document.querySelector('.rc-FormPartsQuestion__error, [data-testid="test-feedback-incorrect"], [data-testid*="feedback" i]'));
+
   if (isReviewPage && location.href !== lastRecordedReviewUrl) {
     lastRecordedReviewUrl = location.href;
-    console.log('[CourseraPro] Auto-detect review page. Passively recording feedback...');
+    console.log('[CourseraPro] Auto-detect review / feedback page. Passively recording feedback...');
     // Give DOM a moment to fully render
     setTimeout(() => {
       recordQuizReviewFeedback().catch(e => console.warn('[CourseraPro] Passive record error:', e));

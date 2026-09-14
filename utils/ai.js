@@ -342,17 +342,17 @@ Your task is to provide the accurate, correct answer for each question.
 
 CRITICAL RULES:
 1. For single choice questions, your answer MUST match the EXACT character string of the correct choice.
-2. For multiple choice / "Check all that apply" questions, provide ALL correct options separated by a pipe character '|' (e.g. "First option|Second option").
+2. For multiple choice / "Check all that apply" / "Select three" questions, you MUST provide ALL correct options separated by a pipe character '|' (e.g. "First option|Second option|Third option"). You must never pick just one option for a multi-select question!
 3. For open-ended, reflection, or short-answer essay questions (where no options are listed), write a high-quality, professional academic paragraph (about 60-120 words) directly answering the prompt.
 4. Return a valid JSON array containing one object per question in exact question order:
 [
   { "id": 1, "answer": "Exact text of correct choice" },
-  { "id": 2, "answer": "First option|Second option" },
+  { "id": 2, "answer": "First option|Second option|Third option" },
   { "id": 3, "answer": "High quality concise academic answer..." }
 ]
 5. Do NOT include markdown commentary. Return only the JSON array.`;
 
-  // Format clearly for the LLM, injecting blacklist warnings if available
+  // Format clearly for the LLM, injecting blacklist warnings and question types
   const formattedPrompt = questions
     .map((q, idx) => {
       const qId = q.id !== undefined ? q.id : idx + 1;
@@ -364,6 +364,23 @@ CRITICAL RULES:
       let item = `Question ${qId}: ${promptText}`;
       if (optionsList.length > 0) {
         item += `\nOptions:\n` + optionsList.map((opt, oIdx) => `  ${String.fromCharCode(65 + oIdx)}. ${opt}`).join('\n');
+      }
+
+      // Check if question is multi-select / checkbox
+      const isCheckbox = q.type === 'checkbox' ||
+        /\b(?:select\s+(?:all|two|three|four|five|\d+)|check\s+all|choose\s+(?:all|two|three|four|five|\d+)|multiple\s+answers?)\b/i.test(promptText);
+
+      if (isCheckbox) {
+        let countNote = '';
+        const countMatch = promptText.match(/\b(?:select|choose)\s+(two|three|four|five|\d+)\b/i);
+        if (countMatch) {
+          const wordMap = { two: 2, three: 3, four: 4, five: 5 };
+          const c = wordMap[countMatch[1].toLowerCase()] || parseInt(countMatch[1], 10);
+          if (c > 1) countNote = ` (EXACTLY ${c} OPTIONS REQUIRED)`;
+        }
+        item += `\n[QUESTION TYPE: MULTI-SELECT CHECKBOX${countNote} - You MUST select ALL required options and join them with a pipe '|'. Example: "Option 1|Option 2|Option 3"]`;
+      } else if (optionsList.length > 0) {
+        item += `\n[QUESTION TYPE: SINGLE CHOICE RADIO - Select EXACTLY ONE correct option.]`;
       }
 
       // Check Smart Retake blacklist
@@ -414,7 +431,16 @@ CRITICAL RULES:
 
   if (Array.isArray(parsed) && parsed.length > 0) {
     return parsed.map((item, idx) => {
-      const ans = typeof item === 'string' ? item : (item.answer || item.definition || item.text || '');
+      let ans = '';
+      if (typeof item === 'string') {
+        ans = item;
+      } else if (Array.isArray(item?.answer)) {
+        ans = item.answer.join('|');
+      } else if (Array.isArray(item?.definition)) {
+        ans = item.definition.join('|');
+      } else {
+        ans = String(item?.answer || item?.definition || item?.text || '');
+      }
       const assignedId = item.id !== undefined ? Number(item.id) : (questions[idx]?.id !== undefined ? questions[idx].id : idx + 1);
       return {
         id: assignedId,
