@@ -176,6 +176,53 @@ export function safeClick(element) {
 }
 
 /**
+ * Select a radio or checkbox option safely in React applications
+ * @param {HTMLInputElement} input
+ * @param {HTMLElement} [wrapper]
+ * @param {string} [badgeLabel]
+ */
+export function selectOptionElement(input, wrapper, badgeLabel) {
+  if (!input) return;
+
+  const labelTarget =
+    input.closest('label') ||
+    (input.id ? document.querySelector(`label[for="${CSS.escape(input.id)}"]`) : null) ||
+    wrapper ||
+    input;
+
+  try {
+    labelTarget.click();
+  } catch (e) {}
+
+  try {
+    if (!input.checked) {
+      input.focus();
+      input.click();
+    }
+  } catch (e) {}
+
+  try {
+    input.checked = true;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  } catch (e) {}
+
+  try {
+    const proto = window.HTMLInputElement.prototype;
+    const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'checked')?.set;
+    if (nativeSetter) {
+      nativeSetter.call(input, true);
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  } catch (_e) {}
+
+  if (badgeLabel) {
+    addBadge(labelTarget || wrapper || input.parentElement || input, badgeLabel);
+  }
+}
+
+/**
  * Add a label/badge to an element
  * @param {Element} element
  * @param {string} text

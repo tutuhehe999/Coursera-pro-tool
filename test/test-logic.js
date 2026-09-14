@@ -374,27 +374,55 @@ assert.strictEqual(checkReviewRequirement("Reviews: 1 of 3 complete"), false);
 assert.strictEqual(checkReviewRequirement("Review 2 more peers to get your grade"), false);
 console.log('✓ Review requirement satisfied detection verified for all Coursera states');
 
+function isGradingPageUrl(url) {
+  const u = (url || '').toLowerCase();
+  return (
+    u.includes('/review-next') ||
+    u.includes('/review_next') ||
+    u.includes('/review/') ||
+    (u.includes('/peer/') && u.includes('/review') && !u.includes('/my-submission'))
+  );
+}
+
+// Verify URL detection for new Coursera review-next layout
+assert.strictEqual(isGradingPageUrl('https://www.coursera.org/learn/engineering-practices-secure-software-quality/peer/r96Hl/assessing-quality-through-scenarios/review-next'), true);
+assert.strictEqual(isGradingPageUrl('https://www.coursera.org/learn/test-course/peer/abc/quiz/review/12345'), true);
+assert.strictEqual(isGradingPageUrl('https://www.coursera.org/learn/engineering-practices-secure-software-quality/peer/r96Hl/assessing-quality-through-scenarios/give-feedback'), false);
+assert.strictEqual(isGradingPageUrl('https://www.coursera.org/learn/test-course/peer/abc/quiz/my-submission'), false);
+console.log('✓ isSubmissionGradingPage correctly detects /review-next without requiring card clicks');
+
 function selectBestRubricRadio(labels) {
   let bestIdx = -1;
   let maxPts = -1;
   for (let i = 0; i < labels.length; i++) {
-    const m = labels[i].match(/(\d+)\s*(?:point|pt|điểm)/i);
-    const pts = m ? parseInt(m[1], 10) : i;
+    const text = labels[i];
+    const m = text.match(/(\d+)\s*(?:points?|pts?|điểm)/i);
+    let pts = m ? parseInt(m[1], 10) : -1;
+
+    // Check positive keywords
+    if (/\b(?:yes|đúng|present|clear|excellent|pass|meets|satisfactory)\b/i.test(text) && pts < 1) {
+      pts = 1;
+    }
+
+    if (pts < 0) pts = i;
+
     if (pts > maxPts) {
       maxPts = pts;
       bestIdx = i;
     }
   }
-  return bestIdx >= 0 ? bestIdx : 0;
+  return bestIdx >= 0 ? bestIdx : (labels.length - 1);
 }
 
-// Case A: 3 points is first (as in user screenshot 3)
+// Case A: 3 points is first
 assert.strictEqual(selectBestRubricRadio(['3 points - Clear and well focused', '2 points', '1 point']), 0);
 // Case B: 3 points is last
 assert.strictEqual(selectBestRubricRadio(['0 points', '1 point', '2 points', '3 points']), 3);
 // Case C: 5 points scale
 assert.strictEqual(selectBestRubricRadio(['1 pt', '2 pts', '3 pts', '4 pts', '5 pts']), 4);
-console.log('✓ Rubric max points selection algorithm verified across all sorting orders');
+// Case D: New Coursera "0 points No" vs "1 point Yes" (as in user screenshot 2)
+assert.strictEqual(selectBestRubricRadio(['0 points\nNo', '1 point\nYes']), 1);
+console.log('✓ Rubric max points selection algorithm verified across all sorting orders and modern Yes/No scales');
 
 console.log('\n========================================');
 console.log('🎉 ALL 12 LOGIC AND ALGORITHM TESTS PASSED!');

@@ -182,6 +182,53 @@ function safeClick(element) {
 }
 
 /**
+ * Select a radio or checkbox option safely in React applications
+ * @param {HTMLInputElement} input
+ * @param {HTMLElement} [wrapper]
+ * @param {string} [badgeLabel]
+ */
+function selectOptionElement(input, wrapper, badgeLabel) {
+  if (!input) return;
+
+  const labelTarget =
+    input.closest('label') ||
+    (input.id ? document.querySelector(`label[for="${CSS.escape(input.id)}"]`) : null) ||
+    wrapper ||
+    input;
+
+  try {
+    labelTarget.click();
+  } catch (e) {}
+
+  try {
+    if (!input.checked) {
+      input.focus();
+      input.click();
+    }
+  } catch (e) {}
+
+  try {
+    input.checked = true;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  } catch (e) {}
+
+  try {
+    const proto = window.HTMLInputElement.prototype;
+    const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'checked')?.set;
+    if (nativeSetter) {
+      nativeSetter.call(input, true);
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  } catch (_e) {}
+
+  if (badgeLabel) {
+    addBadge(labelTarget || wrapper || input.parentElement || input, badgeLabel);
+  }
+}
+
+/**
  * Add a label/badge to an element
  * @param {Element} element
  * @param {string} text
@@ -3314,56 +3361,6 @@ function findAnswerInSource(question, sourceList, blacklist = {}) {
 }
 
 /**
- * Select a radio or checkbox option safely in React applications
- * @param {HTMLInputElement} input
- * @param {HTMLElement} wrapper
- * @param {string} [badgeLabel='✓']
- */
-function selectOptionElement(input, wrapper, badgeLabel = '✓') {
-  if (!input) return;
-
-  const labelTarget =
-    input.closest('label') ||
-    (input.id ? document.querySelector(`label[for="${CSS.escape(input.id)}"]`) : null) ||
-    wrapper ||
-    input;
-
-  // 1. Click label target
-  try {
-    labelTarget.click();
-  } catch (e) {}
-
-  // 2. Click input directly if unchecked
-  try {
-    if (!input.checked) {
-      input.focus();
-      input.click();
-    }
-  } catch (e) {}
-
-  // 3. Dispatch native input and change events
-  try {
-    input.checked = true;
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-  } catch (e) {}
-
-  // 4. Force React checked state for controlled components
-  try {
-    const proto = window.HTMLInputElement.prototype;
-    const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'checked')?.set;
-    if (nativeSetter) {
-      nativeSetter.call(input, true);
-      input.dispatchEvent(new Event('change', { bubbles: true }));
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    }
-  } catch (_e) {}
-
-  // Add badge
-  addBadge(labelTarget || wrapper || input.parentElement || input, badgeLabel);
-}
-
-/**
  * Find question container element for an input
  * @param {HTMLInputElement} inp
  * @returns {Element|null}
@@ -5288,6 +5285,41 @@ async function checkAndResumeAutoReview() {
 }
 
 /**
+ * Detect whether the current page is an active peer review grading / submission page
+ * (Matches /review-next, /review/:id, or any page containing active rubric radio buttons)
+ * @returns {boolean}
+ */
+function isSubmissionGradingPage() {
+  const url = location.href.toLowerCase();
+
+  // Explicit review URLs (modern & classic layouts)
+  if (
+    url.includes('/review-next') ||
+    url.includes('/review_next') ||
+    url.includes('/review/') ||
+    (url.includes('/peer/') && url.includes('/review') && !url.includes('/my-submission'))
+  ) {
+    return true;
+  }
+
+  // DOM heuristics: check for rubric criteria and rating radios
+  if (!url.includes('/submit')) {
+    const hasRubricCriteria = Boolean(
+      document.querySelector(
+        '.rc-FormPartsQuestion, [role="radiogroup"], fieldset, .c-peer-review-rubric-item, [class*="rubric" i], [class*="Rubric" i], [data-testid*="rubric" i]'
+      ) ||
+      (document.body && (document.body.innerText.includes('RUBRIC') || document.body.innerText.includes('Rubric')))
+    );
+    const hasRadios = Boolean(document.querySelector('input[type="radio"], [role="radio"]'));
+    if (hasRubricCriteria && hasRadios) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
  * Main execution step in the auto peer review loop
  */
 async function executeReviewStep() {
@@ -5301,60 +5333,88 @@ async function executeReviewStep() {
 
   const url = location.href;
 
-  // CASE 1: Currently on an individual submission review page (.../review/:submissionId)
-  if (url.includes('/review/')) {
-    showToast(`📝 Đang chấm bài học viên (Bài ${count + 1})...`, 'info');
+  // Check if review requirement is already satisfied
+  if (isReviewRequirementSatisfied()) {
+    stopAutoReview('🎉 Đã hoàn thành đủ số lượng bài chấm chéo theo yêu cầu!', 'success');
+    return;
+  }
+
+  // CASE 1: Currently on an individual submission review / grading page (.../review-next, .../review/:id, or has Rubric)
+  if (isSubmissionGradingPage()) {
+    showToast(`📝 Đang tự động chấm bài học viên (Bài ${count + 1})...`, 'info');
     const success = await fillRubricAndSubmit();
 
     if (success) {
       const newCount = count + 1;
       sessionStorage.setItem(STORAGE_KEY_COUNT, String(newCount));
       showToast(`✅ Đã nộp bài chấm ${newCount} thành công! Đang chuyển tiếp...`, 'success');
-      await sleep(2000);
+      await sleep(2500);
 
-      // Try to navigate back to give-feedback if not redirected automatically
-      if (location.href.includes('/review/')) {
-        const nextActionBtn = Array.from(document.querySelectorAll('button, a')).find((el) => {
-          if (el.closest('#cpt-panel')) return false;
-          const txt = (el.textContent || '').trim().toLowerCase();
-          return (
-            txt.includes('review another') ||
-            txt.includes('back to peers') ||
-            txt.includes('view peers') ||
-            txt.includes('chấm bài khác') ||
-            txt.includes('quay lại')
-          );
-        });
-
-        if (nextActionBtn) {
-          safeClick(nextActionBtn);
-        } else {
-          // Navigate to give-feedback URL directly
-          navigateToGiveFeedback();
-        }
+      // Check if finished requirement after this review
+      if (isReviewRequirementSatisfied()) {
+        stopAutoReview('🎉 Đã hoàn thành đủ số lượng bài chấm chéo theo yêu cầu!', 'success');
+        return;
       }
+
+      // 1. Look for next action button on the post-submit page
+      const nextActionBtn = Array.from(document.querySelectorAll('button, a')).find((el) => {
+        if (el.closest('#cpt-panel') || el.disabled) return false;
+        const txt = (el.textContent || '').trim().toLowerCase();
+        return (
+          txt.includes('review another') ||
+          txt.includes('review next') ||
+          txt.includes('start reviewing') ||
+          txt.includes('chấm bài khác') ||
+          txt.includes('tiếp tục chấm') ||
+          txt.includes('back to peers') ||
+          txt.includes('view peers')
+        );
+      });
+
+      if (nextActionBtn) {
+        showToast('👉 Đang bấm chuyển sang bài tiếp theo...', 'info');
+        safeClick(nextActionBtn);
+        await sleep(2500);
+        await executeReviewStep();
+        return;
+      }
+
+      // 2. If a new submission loaded in-place (still on grading page with unsubmitted rubric)
+      if (isSubmissionGradingPage()) {
+        console.log('[CourseraPro] New peer review submission loaded in-place.');
+        await sleep(1500);
+        await executeReviewStep();
+        return;
+      }
+
+      // 3. Fallback: navigate back to give-feedback to continue from list
+      navigateToGiveFeedback();
     } else {
       console.warn('[CourseraPro] Could not submit review form on current page.');
     }
     return;
   }
 
-  // CASE 2: Currently on the "Peers to review" list page (.../give-feedback)
+  // CASE 2: Currently on the "Peers to review" overview page (.../give-feedback)
   if (url.includes('/give-feedback')) {
     showToast('🔍 Đang kiểm tra chỉ tiêu bài cần chấm...', 'info');
     await sleep(1200);
 
-    // Check if review requirement is already satisfied
     if (isReviewRequirementSatisfied()) {
       stopAutoReview('🎉 Đã hoàn thành đủ số lượng bài chấm chéo theo yêu cầu!', 'success');
       return;
     }
 
-    // Pick and open next peer card to review
-    showToast('👉 Đang chọn một bài nộp để chấm...', 'info');
+    showToast('👉 Đang bấm vào bài nộp để chấm (Start Reviewing)...', 'info');
     const opened = await pickAndOpenNextPeerCard();
 
-    if (!opened) {
+    if (opened) {
+      showToast('🚀 Đang mở bài nộp...', 'info');
+      await sleep(2500);
+      if (isSubmissionGradingPage()) {
+        await executeReviewStep();
+      }
+    } else {
       if (document.body.innerText.includes('reviewed all ungraded submissions')) {
         stopAutoReview('🎉 Bạn đã hoàn thành chấm tất cả bài nộp hiện có!', 'success');
       } else {
@@ -5464,17 +5524,21 @@ async function pickAndOpenNextPeerCard() {
   await sleep(1500);
 
   // Strategy 0: Check for prominent "Start Reviewing" / "Start Review" button (as shown in user screenshot)
-  const allButtons = Array.from(document.querySelectorAll('button, a[role="button"], a.cds-button'));
+  const allButtons = Array.from(document.querySelectorAll('button, a[role="button"], a.cds-button, a'));
   const startReviewBtn = allButtons.find((btn) => {
     if (btn.closest('#cpt-panel') || btn.disabled) return false;
     const txt = (btn.textContent || '').trim().toLowerCase();
+    const href = btn.getAttribute('href') || '';
     return (
       txt === 'start reviewing' ||
       txt.includes('start reviewing') ||
       txt === 'start review' ||
       txt.includes('start review') ||
       txt.includes('bắt đầu chấm') ||
-      txt.includes('review another')
+      txt.includes('review another') ||
+      href.includes('/review-next') ||
+      btn.getAttribute('data-testid') === 'start-review-button' ||
+      btn.getAttribute('data-track-component') === 'start_review_button'
     );
   });
 
@@ -5528,61 +5592,83 @@ async function pickAndOpenNextPeerCard() {
  */
 async function fillRubricAndSubmit() {
   try {
-    await sleep(1500);
+    // Wait up to 6s for rubric elements to appear
+    for (let wait = 0; wait < 6; wait++) {
+      if (document.querySelector('input[type="radio"], [role="radio"], textarea')) break;
+      await sleep(1000);
+    }
 
-    // 1. Fill all Rubric ratings (Select highest point option for each criterion)
-    const questionGroups = Array.from(
-      document.querySelectorAll(
-        '.rc-FormPartsQuestion, [role="radiogroup"], fieldset, .c-peer-review-rubric-item, .rc-FormPart'
-      )
+    // 1. Fill all Rubric ratings (Universal grouping by name or parent container)
+    const allRadios = Array.from(
+      document.querySelectorAll('input[type="radio"], [role="radio"]')
     ).filter((el) => !el.closest('#cpt-panel'));
 
-    for (const group of questionGroups) {
-      // Find all radio inputs in this criterion group
-      const radioInputs = Array.from(group.querySelectorAll('input[type="radio"]'));
+    const radioGroups = new Map();
+    for (const r of allRadios) {
+      const name = r.getAttribute('name');
+      const key = (name && name.trim())
+        ? name
+        : (r.closest('fieldset, [role="radiogroup"], .rc-FormPartsQuestion, tr, [class*="criterion" i], [class*="rubric" i]') || r.parentElement?.parentElement);
+      if (!radioGroups.has(key)) {
+        radioGroups.set(key, []);
+      }
+      radioGroups.get(key).push(r);
+    }
 
-      if (radioInputs.length > 0) {
-        let bestRadio = null;
-        let maxPoints = -1;
+    let selectedCount = 0;
+    for (const [key, radios] of radioGroups.entries()) {
+      if (!radios || radios.length === 0) continue;
 
-        // Parse points for each radio option
-        for (let i = 0; i < radioInputs.length; i++) {
-          const r = radioInputs[i];
-          const container =
-            r.closest('label') || r.closest('.cds-checkboxAndRadio-label') || r.closest('div') || r.parentElement;
-          const text = (container ? container.textContent : '') || '';
-          const m = text.match(/(\d+)\s*(?:point|pt|điểm)/i);
-          const pts = m ? parseInt(m[1], 10) : i;
+      let bestRadio = null;
+      let maxPoints = -1;
 
-          if (pts > maxPoints) {
-            maxPoints = pts;
-            bestRadio = r;
-          }
+      for (let i = 0; i < radios.length; i++) {
+        const r = radios[i];
+        const container =
+          r.closest('label') || r.closest('.cds-checkboxAndRadio-label') || r.closest('div') || r.parentElement;
+        const text = (container ? container.textContent : '') || '';
+
+        // Check for point values like "1 point", "2 points", "1 pt", "1 điểm"
+        const m = text.match(/(\d+)\s*(?:points?|pts?|điểm)/i);
+        let pts = m ? parseInt(m[1], 10) : -1;
+
+        // Check positive keywords like "yes", "đúng", "pass", "clear", "present", "meets"
+        const isPositiveKeyword = /\b(?:yes|đúng|present|clear|excellent|pass|meets|satisfactory)\b/i.test(text);
+        if (isPositiveKeyword && pts < 1) {
+          pts = 1;
         }
 
-        // If no explicit points found, default to first or last
-        if (!bestRadio) {
-          bestRadio = radioInputs[0];
+        // Default to index if no points found
+        if (pts < 0) {
+          pts = i;
         }
 
-        if (bestRadio) {
-          bestRadio.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-          bestRadio.click();
-          bestRadio.dispatchEvent(new Event('change', { bubbles: true }));
-          bestRadio.dispatchEvent(new Event('input', { bubbles: true }));
+        if (pts > maxPoints) {
+          maxPoints = pts;
+          bestRadio = r;
         }
       }
 
-      // Star rating or custom point buttons
-      const ratingButtons = Array.from(
-        group.querySelectorAll(
-          'button[aria-label*="point" i], button[aria-label*="star" i], button[role="radio"], button[aria-label*="điểm" i]'
-        )
-      );
-      if (ratingButtons.length > 0) {
-        const bestBtn = ratingButtons[ratingButtons.length - 1];
-        bestBtn.click();
+      if (!bestRadio) {
+        bestRadio = radios[radios.length - 1]; // Pick last (usually highest)
       }
+
+      if (bestRadio) {
+        bestRadio.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        selectOptionElement(bestRadio);
+        selectedCount++;
+      }
+    }
+
+    // Also check star ratings or custom point buttons if any
+    const ratingButtons = Array.from(
+      document.querySelectorAll(
+        'button[aria-label*="point" i], button[aria-label*="star" i], button[role="radio"], button[aria-label*="điểm" i]'
+      )
+    ).filter((el) => !el.closest('#cpt-panel'));
+    if (ratingButtons.length > 0) {
+      const bestBtn = ratingButtons[ratingButtons.length - 1];
+      bestBtn.click();
     }
 
     await sleep(800);
@@ -5590,7 +5676,7 @@ async function fillRubricAndSubmit() {
     // 2. Fill all text feedback areas (Comments textarea: "Share your thoughts...")
     const textareas = Array.from(
       document.querySelectorAll(
-        'textarea, .c-peer-review-submit-textarea-input-field, div[data-testid="peer-review-multi-line-input-field"], [contenteditable="true"]'
+        'textarea, input[type="text"]:not([readonly]), .c-peer-review-submit-textarea-input-field, div[data-testid="peer-review-multi-line-input-field"], [contenteditable="true"]'
       )
     ).filter((field) => !field.closest('#cpt-panel') && field.type !== 'hidden' && field.style.display !== 'none');
 
@@ -5608,13 +5694,15 @@ async function fillRubricAndSubmit() {
           simulateTyping(field, randomReview);
           document.execCommand('insertText', false, randomReview);
         }
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+        field.dispatchEvent(new Event('change', { bubbles: true }));
       }
     }
 
     await sleep(1000);
 
     // 3. Find and click "Submit Review" button
-    const allButtons = Array.from(document.querySelectorAll('button, input[type="submit"]'));
+    const allButtons = Array.from(document.querySelectorAll('button, input[type="submit"], a[role="button"]'));
     const submitBtn = allButtons.find((btn) => {
       if (btn.closest('#cpt-panel') || btn.disabled) return false;
       const txt = (btn.textContent || btn.value || '').trim().toLowerCase();
@@ -5623,6 +5711,7 @@ async function fillRubricAndSubmit() {
         txt.includes('submit review') ||
         txt === 'submit' ||
         txt.includes('gửi đánh giá') ||
+        txt.includes('submit assignment') ||
         (btn.type === 'submit' && !txt.includes('cancel') && !txt.includes('hủy'))
       );
     });
@@ -5635,7 +5724,7 @@ async function fillRubricAndSubmit() {
 
       // Handle confirmation dialog if any
       const confirmBtn = Array.from(
-        document.querySelectorAll('[role="dialog"] button, .modal button, .rc-Modal button')
+        document.querySelectorAll('[role="dialog"] button, .modal button, .rc-Modal button, [data-testid*="dialog" i] button')
       ).find((b) => {
         if (b.closest('#cpt-panel')) return false;
         const t = (b.textContent || '').trim().toLowerCase();

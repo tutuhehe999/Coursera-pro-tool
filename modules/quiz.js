@@ -20,6 +20,7 @@ import {
   wordOverlapRatio,
   getBlacklistedAnswersForQuestion,
   isAnswerBlacklisted,
+  selectOptionElement,
 } from '../utils/dom.js';
 import { generateQuizAnswers, generateContent, getAISettings } from '../utils/ai.js';
 import { showToast, updateProgress } from '../ui/panel.js';
@@ -439,56 +440,6 @@ function findAnswerInSource(question, sourceList, blacklist = {}) {
   }
 
   return null;
-}
-
-/**
- * Select a radio or checkbox option safely in React applications
- * @param {HTMLInputElement} input
- * @param {HTMLElement} wrapper
- * @param {string} [badgeLabel='✓']
- */
-function selectOptionElement(input, wrapper, badgeLabel = '✓') {
-  if (!input) return;
-
-  const labelTarget =
-    input.closest('label') ||
-    (input.id ? document.querySelector(`label[for="${CSS.escape(input.id)}"]`) : null) ||
-    wrapper ||
-    input;
-
-  // 1. Click label target
-  try {
-    labelTarget.click();
-  } catch (e) {}
-
-  // 2. Click input directly if unchecked
-  try {
-    if (!input.checked) {
-      input.focus();
-      input.click();
-    }
-  } catch (e) {}
-
-  // 3. Dispatch native input and change events
-  try {
-    input.checked = true;
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-  } catch (e) {}
-
-  // 4. Force React checked state for controlled components
-  try {
-    const proto = window.HTMLInputElement.prototype;
-    const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'checked')?.set;
-    if (nativeSetter) {
-      nativeSetter.call(input, true);
-      input.dispatchEvent(new Event('change', { bubbles: true }));
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    }
-  } catch (_e) {}
-
-  // Add badge
-  addBadge(labelTarget || wrapper || input.parentElement || input, badgeLabel);
 }
 
 /**
