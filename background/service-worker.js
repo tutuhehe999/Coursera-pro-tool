@@ -158,7 +158,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
               chrome.tabs.remove(activeDiscussionWorkerTabId).catch(() => {});
               activeDiscussionWorkerTabId = null;
             }
-            sendResponse({ success: true, alreadySubmitted: msg.alreadySubmitted });
+            sendResponse({
+              success: msg.success === true,
+              alreadySubmitted: !!msg.alreadySubmitted,
+              error: msg.error || null,
+            });
           }
         }
       };
